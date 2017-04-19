@@ -69,8 +69,8 @@ loop:
 
 	fmt.Printf("Run: %+v\n", args)
 
-	for change := range watcher.Watch(200 * time.Millisecond) {
-		fmt.Printf("change: %v", change)
+	for change := range watcher.Watch(500 * time.Millisecond) {
+		fmt.Println(change)
 	}
 
 	defer watcher.Close()

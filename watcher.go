@@ -15,7 +15,7 @@ type Watcher struct {
 	ignore  []string
 }
 
-type Change struct {
+type ChangeSet struct {
 	files  map[string]struct{}
 	errors []error
 }
@@ -48,47 +48,42 @@ func (w *Watcher) Ignore(paths ...string) {
 	}
 }
 
-func (w *Watcher) Watch(delay time.Duration) chan Change {
+func (w *Watcher) Watch(delay time.Duration) chan ChangeSet {
 	// resolve add + ignore paths
-	w.watcher.Add("./")
+	for _, path := range w.watch { //s
+		w.watcher.Add(path)
+	}
 
-	changes := make(chan Change, 1)
+	changes := make(chan ChangeSet, 1)
 
 	go func() {
 		for {
-			change := Change{
+			change := ChangeSet{
 				files: make(map[string]struct{}),
 			}
 
 			timeout := time.NewTimer(1<<63 - 1) // max duration
 			timeout.Stop()
-			first := true
 
+		loop:
 			for {
 				select {
 				case event := <-w.watcher.Events:
-					if first {
-						first = false
-						timeout = time.NewTimer(delay)
-					}
+					timeout.Reset(delay)
 
-					log.Println("event:", event)
-					if event.Op&fsnotify.Write == fsnotify.Write {
-						log.Println("modified file:", event.Name)
-					}
+					log.Println("event:", event) //
+					// if event.Op&fsnotify.Write == fsnotify.Write {
+					// 	log.Println("modified file:", event.Name)
+					// }
 					change.files[event.Name] = struct{}{}
 
 				case err := <-w.watcher.Errors:
-					if first {
-						first = false
-						timeout = time.NewTimer(delay)
-					}
-
 					change.errors = append(change.errors, err)
 
 				case <-timeout.C:
 					changes <- change
-					break
+					timeout.Stop()
+					break loop
 				}
 			}
 		}
@@ -101,6 +96,6 @@ func (w *Watcher) Close() error {
 	return w.watcher.Close()
 }
 
-func (c *Change) String() string {
-	return fmt.Sprintf("%v\nerrors: %v\n\n", c.files, c.errors)
+func (c *ChangeSet) String() string {
+	return fmt.Sprintf("ChangeSet: %v\nErrors: %v\n\n", c.files, c.errors)
 }
