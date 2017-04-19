@@ -3,6 +3,9 @@ package rerun
 import (
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -51,7 +54,18 @@ func (w *Watcher) Ignore(paths ...string) {
 func (w *Watcher) Watch(delay time.Duration) chan ChangeSet {
 	// resolve add + ignore paths
 	for _, path := range w.watch { //s
-		w.watcher.Add(path)
+		filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
+			if !info.IsDir() {
+				return nil
+			}
+			if strings.HasSuffix(path, ".git") {
+				return filepath.SkipDir
+			}
+
+			w.watcher.Add(path)
+			fmt.Printf("watch %v\n", path)
+			return nil
+		})
 	}
 
 	changes := make(chan ChangeSet, 1)
@@ -69,9 +83,14 @@ func (w *Watcher) Watch(delay time.Duration) chan ChangeSet {
 			for {
 				select {
 				case event := <-w.watcher.Events:
+					// Ignore CHMOD.
+					if event.Op&fsnotify.Chmod == fsnotify.Chmod {
+						continue
+					}
+
 					timeout.Reset(delay)
 
-					log.Println("event:", event) //
+					log.Printf("event: %v (%v)\n", event, time.Now()) //
 					// if event.Op&fsnotify.Write == fsnotify.Write {
 					// 	log.Println("modified file:", event.Name)
 					// }
