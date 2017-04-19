@@ -1,8 +1,6 @@
 package rerun
 
 import (
-	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,8 +12,8 @@ import (
 type Watcher struct {
 	watcher *fsnotify.Watcher
 	done    chan struct{}
-	watch   []string
-	ignore  []string
+	watch   map[string]struct{}
+	ignore  map[string]struct{}
 }
 
 type ChangeSet struct {
@@ -32,41 +30,52 @@ func NewWatcher() (*Watcher, error) {
 	w := &Watcher{
 		watcher: watcher,
 		done:    make(chan struct{}),
+		watch:   make(map[string]struct{}),
+		ignore:  make(map[string]struct{}),
 	}
 
 	return w, nil
 }
 
 func (w *Watcher) Add(paths ...string) {
-	w.watch = append(w.watch, paths...)
 	for _, path := range paths {
-		fmt.Printf("Add %v\n", path)
+		w.watch[path] = struct{}{}
+		//fmt.Printf("Add %v\n", path)
 	}
 }
 
 func (w *Watcher) Ignore(paths ...string) {
-	w.ignore = append(w.ignore, paths...)
 	for _, path := range paths {
-		fmt.Printf("Ignore %v\n", path)
+		w.ignore[path] = struct{}{}
+		//fmt.Printf("Ignore %v\n", path)
 	}
 }
 
 func (w *Watcher) Watch(delay time.Duration) chan ChangeSet {
+	//	fmt.Println()
+
 	// resolve add + ignore paths
-	for _, path := range w.watch { //s
+	for path, _ := range w.watch { //s
 		filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
 			if !info.IsDir() {
 				return nil
 			}
 			if strings.HasSuffix(path, ".git") {
+				//fmt.Printf("skip %v\n", path)
+				return filepath.SkipDir
+			}
+
+			if _, ok := w.ignore[path]; ok {
+				//fmt.Printf("skip %v\n", path)
 				return filepath.SkipDir
 			}
 
 			w.watcher.Add(path)
-			fmt.Printf("watch %v\n", path)
+			//fmt.Printf("watch %v\n", path)
 			return nil
 		})
 	}
+	//	fmt.Println()
 
 	changes := make(chan ChangeSet, 1)
 
@@ -90,7 +99,7 @@ func (w *Watcher) Watch(delay time.Duration) chan ChangeSet {
 
 					timeout.Reset(delay)
 
-					log.Printf("event: %v (%v)\n", event, time.Now()) //
+					//fmt.Printf("event: %v (%v)\n", event, time.Now()) //
 					// if event.Op&fsnotify.Write == fsnotify.Write {
 					// 	log.Println("modified file:", event.Name)
 					// }
@@ -116,5 +125,9 @@ func (w *Watcher) Close() error {
 }
 
 func (c *ChangeSet) String() string {
-	return fmt.Sprintf("ChangeSet: %v\nErrors: %v\n\n", c.files, c.errors)
+	str := ""
+	for file, _ := range c.files {
+		str += "\n" + file
+	}
+	return str
 }

@@ -67,13 +67,18 @@ loop:
 		log.Fatal("interactive mode")
 	}
 
-	fmt.Printf("Run: %+v\n", args)
+	fmt.Printf("\033c")
+	cmd, err := rerun.Run(args...)
+	if err != nil {
+		fmt.Printf("ERROR: %v\n", err)
+	}
 
-	for change := range watcher.Watch(500 * time.Millisecond) {
-		fmt.Println(change)
+	for change := range watcher.Watch(200 * time.Millisecond) {
+		fmt.Printf("\033c%v\n", change)
+		if err := cmd.Restart(); err != nil {
+			fmt.Printf("ERROR: %v\n", err)
+		}
 	}
 
 	defer watcher.Close()
-
-	select {}
 }
