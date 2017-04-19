@@ -64,7 +64,7 @@ loop:
 	}
 
 	if mode == argNone {
-		log.Fatal("interactive mode")
+		log.Fatal("TODO: interactive mode")
 	}
 
 	fmt.Printf("\033c")
@@ -74,11 +74,13 @@ loop:
 	}
 
 	for change := range watcher.Watch(200 * time.Millisecond) {
-		fmt.Printf("\033c%v\n", change)
+		fmt.Printf("\033c")
+		_ = change
+		//fmt.Printf("\033c%v\n", change)
 		if err := cmd.Restart(); err != nil {
 			fmt.Printf("ERROR: %v\n", err)
 		}
 	}
 
-	defer watcher.Close()
+	watcher.Close()
 }
