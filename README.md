@@ -1,15 +1,19 @@
 rerun: Re-run command on file system changes
 ======
 
-Lightweight file-watcher that re-runs command on FS changes. It has simple CLI and optional config file. By default, it uses 200ms delay, which gives enough time for tools like git to update all directories/files within repository before killing the old process.
+Lightweight file-watcher that re-runs given command on FS changes. It has simple CLI and optional config file. By default, it uses 200ms delay, which gives enough time for tools like git to update all directories/files within repository before killing the old process (when you switch branches etc).
 
-**In development. Only CLI MVP works right now.**
+#### In development. Only CLI MVP works right now.
 
 # Usage
-## `rerun [-watch DIRS...] [-ignore DIRS...] -run COMMAND [ARG...]`
+### `rerun [-watch DIR...] [-ignore DIR...] -run COMMAND [ARG...]`
 
+#### Examples:
 ```bash
-rerun -watch $(go list ./...) -ignore vendor bin -run go test -run=YourTest
+$ rerun -watch ./ -ignore vendor bin -run go run cmd/rerun/main.go
+```
+```bash
+$ cd tests && rerun -watch '*_test.go' ../pkg -ignore vendor bin -run go test -run=Test
 ```
 
 # Installation
@@ -17,13 +21,13 @@ rerun -watch $(go list ./...) -ignore vendor bin -run go test -run=YourTest
 ```bash
 go get -u github.com/VojtechVitek/rerun/cmd/rerun
 ```
-*[Download Go here](https://golang.org/dl/).*
+*You might need to [download Go](https://golang.org/dl/) first.*
 
 *TODO: Release page.*
 
 # TODO
 
-- [ ] Versioning + (Releases)[/releases]
+- [ ] Versioning + [Releases](/releases)
 - [ ] Regexp matches
 - [ ] Verbose mode
 - [ ] Interactive mode
@@ -50,8 +54,9 @@ test-login:
     - go test -run=Login
 ```
 
+Written in [golang](https://github.com/golang/go).
 
-Written in [golang](https://github.com/golang/go). Uses [fsnotify](https://github.com/fsnotify/fsnotify) behind the scenes, so technically it should work on most platforms including Linux, Mac OS and Windows.
+Uses [fsnotify](https://github.com/fsnotify/fsnotify) behind the scenes, so technically it should work on most platforms including Linux, Mac OS and Windows.
 
 # License
 
