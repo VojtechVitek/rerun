@@ -6,7 +6,18 @@ import (
 
 	"os"
 
+	"time"
+
 	"github.com/VojtechVitek/rerun"
+)
+
+type argType int
+
+const (
+	argNone argType = iota
+	argWatch
+	argIgnore
+	argRun
 )
 
 func main() {
@@ -58,7 +69,10 @@ loop:
 
 	fmt.Printf("Run: %+v\n", args)
 
-	go watcher.Watch()
+	for change := range watcher.Watch(200 * time.Millisecond) {
+		fmt.Printf("change: %v", change)
+	}
+
 	defer watcher.Close()
 
 	select {}

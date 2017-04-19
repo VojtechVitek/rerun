@@ -3,6 +3,7 @@ package rerun
 import (
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 )
@@ -12,6 +13,11 @@ type Watcher struct {
 	done    chan struct{}
 	watch   []string
 	ignore  []string
+}
+
+type Change struct {
+	files  map[string]struct{}
+	errors []error
 }
 
 func NewWatcher() (*Watcher, error) {
@@ -42,23 +48,59 @@ func (w *Watcher) Ignore(paths ...string) {
 	}
 }
 
-func (w *Watcher) Watch() error {
+func (w *Watcher) Watch(delay time.Duration) chan Change {
 	// resolve add + ignore paths
 	w.watcher.Add("./")
 
-	for {
-		select {
-		case event := <-w.watcher.Events:
-			log.Println("event:", event)
-			if event.Op&fsnotify.Write == fsnotify.Write {
-				log.Println("modified file:", event.Name)
+	changes := make(chan Change, 1)
+
+	go func() {
+		for {
+			change := Change{
+				files: make(map[string]struct{}),
 			}
-		case err := <-w.watcher.Errors:
-			return err
+
+			timeout := time.NewTimer(1<<63 - 1) // max duration
+			timeout.Stop()
+			first := true
+
+			for {
+				select {
+				case event := <-w.watcher.Events:
+					if first {
+						first = false
+						timeout = time.NewTimer(delay)
+					}
+
+					log.Println("event:", event)
+					if event.Op&fsnotify.Write == fsnotify.Write {
+						log.Println("modified file:", event.Name)
+					}
+					change.files[event.Name] = struct{}{}
+
+				case err := <-w.watcher.Errors:
+					if first {
+						first = false
+						timeout = time.NewTimer(delay)
+					}
+
+					change.errors = append(change.errors, err)
+
+				case <-timeout.C:
+					changes <- change
+					break
+				}
+			}
 		}
-	}
+	}()
+
+	return changes
 }
 
 func (w *Watcher) Close() error {
 	return w.watcher.Close()
+}
+
+func (c *Change) String() string {
+	return fmt.Sprintf("%v\nerrors: %v\n\n", c.files, c.errors)
 }
