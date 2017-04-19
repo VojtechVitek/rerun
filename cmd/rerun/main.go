@@ -1,39 +1,12 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"log"
 
+	"os"
+
 	"github.com/VojtechVitek/rerun"
-)
-
-var (
-	watch flagStringSlice
-)
-
-type flagStringSlice []string
-
-func (f *flagStringSlice) String() string {
-	return fmt.Sprintf("%v", *f)
-}
-
-func (f *flagStringSlice) Set(value string) error {
-	*f = append(*f, value)
-	return nil
-}
-
-func init() {
-	flag.Var(&watch, "watch", "Watch directory/file")
-}
-
-type argType int
-
-const (
-	argNone argType = iota
-	argWatch
-	argIgnore
-	argRun
 )
 
 func main() {
@@ -41,6 +14,49 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	args := os.Args[1:]
+	mode := argNone
+
+	// Parse command line arguments.
+	// -watch dirs ...
+	// -ignore dirs ...
+	// -run command ...
+loop:
+	for i, arg := range args {
+		switch mode {
+		case argNone, argWatch, argIgnore:
+			switch arg {
+			case "-watch":
+				mode = argWatch
+				continue
+			case "-ignore":
+				mode = argIgnore
+				continue
+			case "-run":
+				mode = argRun
+				continue
+			}
+		}
+
+		switch mode {
+		case argWatch:
+			watcher.Add(arg)
+		case argIgnore:
+			watcher.Ignore(arg)
+		case argRun:
+			args = args[i:]
+			break loop
+		default:
+			break loop
+		}
+	}
+
+	if mode == argNone {
+		log.Fatal("interactive mode")
+	}
+
+	fmt.Printf("Run: %+v\n", args)
 
 	go watcher.Watch()
 	defer watcher.Close()
