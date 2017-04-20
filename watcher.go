@@ -17,8 +17,8 @@ type Watcher struct {
 }
 
 type ChangeSet struct {
-	files  map[string]struct{}
-	errors []error
+	Files map[string]struct{}
+	Error error
 }
 
 func NewWatcher() (*Watcher, error) {
@@ -82,7 +82,7 @@ func (w *Watcher) Watch(delay time.Duration) chan ChangeSet {
 	go func() {
 		for {
 			change := ChangeSet{
-				files: make(map[string]struct{}),
+				Files: make(map[string]struct{}),
 			}
 
 			timeout := time.NewTimer(1<<63 - 1) // max duration
@@ -103,10 +103,13 @@ func (w *Watcher) Watch(delay time.Duration) chan ChangeSet {
 					// if event.Op&fsnotify.Write == fsnotify.Write {
 					// 	log.Println("modified file:", event.Name)
 					// }
-					change.files[event.Name] = struct{}{}
+					change.Files[event.Name] = struct{}{}
 
 				case err := <-w.watcher.Errors:
-					change.errors = append(change.errors, err)
+					change.Error = err
+					changes <- change
+					timeout.Stop()
+					break loop
 
 				case <-timeout.C:
 					changes <- change
@@ -126,7 +129,7 @@ func (w *Watcher) Close() error {
 
 func (c *ChangeSet) String() string {
 	str := ""
-	for file, _ := range c.files {
+	for file, _ := range c.Files {
 		str += "\n" + file
 	}
 	return str

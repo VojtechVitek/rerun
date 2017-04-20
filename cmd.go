@@ -1,7 +1,6 @@
 package rerun
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"syscall"
@@ -12,7 +11,7 @@ type Cmd struct {
 	args []string
 }
 
-func Command(args ...string) (*Cmd, error) {
+func StartCommand(args ...string) (*Cmd, error) {
 	c := &Cmd{
 		args: args,
 	}
@@ -47,12 +46,21 @@ func (c *Cmd) Kill() error {
 
 	// Make sure our own children gets killed.
 	if err := c.cmd.Process.Kill(); err != nil {
-		fmt.Println(err)
+		return err
 	}
 
+	// Wait for the children to finish.
 	if err := c.cmd.Wait(); err != nil {
-		fmt.Println(err)
+		return err
 	}
 
 	return nil
+}
+
+func (c *Cmd) String() string {
+	str := "$"
+	for _, arg := range c.args {
+		str += " " + arg
+	}
+	return str
 }

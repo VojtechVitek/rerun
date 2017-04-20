@@ -3,9 +3,9 @@ package main
 import (
 	"fmt"
 	"log"
-
 	"os"
-
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/VojtechVitek/rerun"
@@ -66,18 +66,37 @@ loop:
 	if mode == argNone {
 		log.Fatal("TODO: interactive mode")
 	}
-
-	fmt.Printf("\033c")
-	cmd, err := rerun.Run(args...)
+	// yay
+	cmd, err := rerun.StartCommand(args...)
 	if err != nil {
-		fmt.Printf("ERROR: %v\n", err)
+		log.Fatal(err)
 	}
+	defer cmd.Kill()
+	fmt.Printf("\033c%v\n", cmd)
 
-	for change := range watcher.Watch(200 * time.Millisecond) {
-		fmt.Printf("\033c")
-		_ = change
-		//fmt.Printf("\033c%v\n", change)
-		if err := cmd.Restart(); err != nil {
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+	go func() {
+		<-sig
+		cmd.Kill()
+		watcher.Close()
+		os.Exit(1)
+	}()
+
+	for changeSet := range watcher.Watch(200 * time.Millisecond) {
+		cmd.Kill()
+
+		if changeSet.Error != nil {
+			log.Fatal(err)
+		}
+
+		plural := ""
+		if len(changeSet.Files) > 1 {
+			plural = "s"
+		}
+		fmt.Printf("\033c\033[32m# %v file%v changed.\033[0m\n%v\n", len(changeSet.Files), plural, cmd)
+
+		if err := cmd.Start(); err != nil {
 			fmt.Printf("ERROR: %v\n", err)
 		}
 	}
