@@ -11,7 +11,6 @@ import (
 
 type Watcher struct {
 	watcher *fsnotify.Watcher
-	done    chan struct{}
 	watch   map[string]struct{}
 	ignore  map[string]struct{}
 }
@@ -29,7 +28,6 @@ func NewWatcher() (*Watcher, error) {
 
 	w := &Watcher{
 		watcher: watcher,
-		done:    make(chan struct{}),
 		watch:   make(map[string]struct{}),
 		ignore:  make(map[string]struct{}),
 	}
