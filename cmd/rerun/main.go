@@ -25,6 +25,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer watcher.Close()
 
 	args := os.Args[1:]
 	mode := argNone
@@ -66,7 +67,7 @@ loop:
 	if mode == argNone {
 		log.Fatal("TODO: interactive mode")
 	}
-	// yay
+
 	cmd, err := rerun.StartCommand(args...)
 	if err != nil {
 		log.Fatal(err)
@@ -100,6 +101,4 @@ loop:
 			fmt.Printf("ERROR: %v\n", err)
 		}
 	}
-
-	watcher.Close()
 }
