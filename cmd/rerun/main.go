@@ -68,15 +68,15 @@ loop:
 		log.Fatal("TODO: interactive mode")
 	}
 
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+
 	cmd, err := rerun.StartCommand(args...)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer cmd.Kill()
-	fmt.Printf("\033c%v\n", cmd)
 
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 	go func() {
 		<-sig
 		cmd.Kill()
@@ -84,11 +84,12 @@ loop:
 		os.Exit(1)
 	}()
 
+	fmt.Printf("\033c%v\n", cmd)
 	for changeSet := range watcher.Watch(200 * time.Millisecond) {
 		cmd.Kill()
 
 		if changeSet.Error != nil {
-			log.Fatal(err)
+			fmt.Printf("ERROR: %v\n", err)
 		}
 
 		plural := ""
