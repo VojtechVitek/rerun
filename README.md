@@ -13,7 +13,7 @@ Lightweight file-watcher that re-runs given command on FS changes. It has simple
 $ rerun -watch ./ -ignore vendor bin -run go run ./cmd/rerun/main.go
 ```
 ```bash
-$ rerun -watch ./ -ignore vendor bin -run sh -c 'go build -i -o ./rerun ./cmd/rerun/main.go && ./rerun'
+$ rerun -watch ./ -ignore vendor bin -run sh -c 'go build -i -o ./bin/rerun ./cmd/rerun/main.go && ./bin/rerun'
 ```
 ```bash
 $ cd tests && rerun -watch '*_test.go' ../pkg -ignore vendor bin -run go test -run=Test
