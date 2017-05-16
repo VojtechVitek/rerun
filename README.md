@@ -35,6 +35,7 @@ go get -u github.com/VojtechVitek/rerun/cmd/rerun
 - [ ] Verbose mode
 - [ ] Interactive mode
 - [ ] Config file, as an alternative to direct CLI invocation
+- [ ] Act when a new dir is added/removed
 
 ```yaml
 api:
