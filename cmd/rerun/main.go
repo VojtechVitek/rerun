@@ -25,7 +25,6 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer watcher.Close()
 
 	args := os.Args[1:]
 	mode := argNone
@@ -79,17 +78,46 @@ loop:
 
 	go func() {
 		<-sig
-		cmd.Kill()
-		watcher.Close()
+
+		if err := cmd.Kill(); err != nil {
+			fmt.Printf("%v\n", err)
+			os.Exit(1)
+		}
+
+		go func() {
+			<-sig // Double kill, exit now.
+			os.Exit(1)
+		}()
+
+		done := make(chan struct{}, 0)
+		go func() {
+			for {
+				select {
+				case <-done:
+					return
+				case <-time.After(1 * time.Second):
+					fmt.Printf("\033cWaiting on PID %v\n", cmd.PID())
+				}
+			}
+		}()
+		if err := cmd.Wait(); err != nil {
+			fmt.Printf("%v\n", err)
+		}
+		close(done)
+
 		os.Exit(1)
 	}()
 
 	fmt.Printf("\033c%v\n", cmd)
 	for changeSet := range watcher.Watch(200 * time.Millisecond) {
-		cmd.Kill()
-
+		if err := cmd.Kill(); err != nil {
+			fmt.Printf("%v\n", err)
+		}
+		if err := cmd.Wait(); err != nil {
+			fmt.Printf("%v\n", err)
+		}
 		if changeSet.Error != nil {
-			fmt.Printf("ERROR: %v\n", err)
+			fmt.Printf("%v\n", err)
 		}
 
 		plural := ""
@@ -99,7 +127,9 @@ loop:
 		fmt.Printf("\033c\033[32m# %v file%v changed.\033[0m\n%v\n", len(changeSet.Files), plural, cmd)
 
 		if err := cmd.Start(); err != nil {
-			fmt.Printf("ERROR: %v\n", err)
+			fmt.Printf("%v\n", err)
 		}
 	}
+
+	select {}
 }

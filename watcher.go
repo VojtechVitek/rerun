@@ -13,6 +13,7 @@ type Watcher struct {
 	watcher *fsnotify.Watcher
 	watch   map[string]struct{}
 	ignore  map[string]struct{}
+	done    chan struct{}
 }
 
 type ChangeSet struct {
@@ -30,6 +31,7 @@ func NewWatcher() (*Watcher, error) {
 		watcher: watcher,
 		watch:   make(map[string]struct{}),
 		ignore:  make(map[string]struct{}),
+		done:    make(chan struct{}, 0),
 	}
 
 	return w, nil
@@ -49,7 +51,7 @@ func (w *Watcher) Ignore(paths ...string) {
 	}
 }
 
-func (w *Watcher) Watch(delay time.Duration) chan ChangeSet {
+func (w *Watcher) Watch(delay time.Duration) <-chan ChangeSet {
 	//	fmt.Println()
 
 	// resolve add + ignore paths
@@ -113,6 +115,11 @@ func (w *Watcher) Watch(delay time.Duration) chan ChangeSet {
 					changes <- change
 					timeout.Stop()
 					break loop
+
+				case <-w.done:
+					close(changes)
+					timeout.Stop()
+					return
 				}
 			}
 		}
@@ -122,6 +129,7 @@ func (w *Watcher) Watch(delay time.Duration) chan ChangeSet {
 }
 
 func (w *Watcher) Close() error {
+	close(w.done)
 	return w.watcher.Close()
 }
 

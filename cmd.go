@@ -1,6 +1,7 @@
 package rerun
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"syscall"
@@ -38,23 +39,24 @@ func (c *Cmd) Start() error {
 }
 
 func (c *Cmd) Kill() error {
-	// Kill the children process group, which we created via Setpgid: true.
-	// This should kill children and all its children.
+	// Try to kill the whole process group (which we created via Setpgid: true), if possible.
+	// This should kill the command process, all its children and grandchildren.
 	if pgid, err := syscall.Getpgid(c.cmd.Process.Pid); err == nil {
-		syscall.Kill(-pgid, 9)
+		_ = syscall.Kill(-pgid, 9)
 	}
 
-	// Make sure our own children gets killed.
-	if err := c.cmd.Process.Kill(); err != nil {
-		return err
-	}
+	// Kill the process.
+	// Note: The process group kill syscall sometimes fails on Mac OS, so let's just do both.
+	return c.cmd.Process.Kill()
+}
 
-	// Wait for the children to finish.
-	if err := c.cmd.Wait(); err != nil {
-		return err
-	}
+func (c *Cmd) Wait() error {
+	// Wait for the process to finish.
+	return c.cmd.Wait()
+}
 
-	return nil
+func (c *Cmd) PID() string {
+	return fmt.Sprintf("PID %v: %v", c.cmd.Process.Pid, c.cmd.ProcessState.String())
 }
 
 func (c *Cmd) String() string {
