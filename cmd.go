@@ -28,7 +28,9 @@ func (c *Cmd) Start() error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	// NOTE: leaving this commented as it will break certain binaries from even starting.
+	// cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if err := cmd.Start(); err != nil {
 		return err

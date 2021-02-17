@@ -1,5 +1,5 @@
 rerun: Re-run command on file system changes
-======
+============================================
 
 Lightweight file-watcher that re-runs given command on FS changes. It has simple CLI and optional config file. By default, it uses 200ms delay, which gives enough time for tools like git to update all directories/files within repository before killing the old process (when you switch branches etc).
 
@@ -22,7 +22,7 @@ $ cd tests && rerun -watch '*_test.go' ../pkg -ignore vendor bin -run go test -r
 # Installation
 
 ```bash
-go get -u github.com/VojtechVitek/rerun/cmd/rerun
+go get -u github.com/goware/rerun/cmd/rerun
 ```
 *You might need to [download Go](https://golang.org/dl/) first.*
 

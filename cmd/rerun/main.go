@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/VojtechVitek/rerun"
+	"github.com/goware/rerun"
 )
 
 type argType int

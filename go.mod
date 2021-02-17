@@ -1,4 +1,4 @@
-module github.com/VojtechVitek/rerun
+module github.com/goware/rerun
 
 go 1.14
 
