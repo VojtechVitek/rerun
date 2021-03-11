@@ -30,13 +30,12 @@ go get -u github.com/VojtechVitek/rerun/cmd/rerun
 
 # TODO
 
-- [ ] Versioning + [Releases](/releases)
 - [ ] Regexp matches
 - [ ] Verbose mode
 - [ ] Interactive mode
 - [ ] Config file, as an alternative to direct CLI invocation
 - [ ] Act when a new dir is added/removed
-- [ ] Support Windows
+- [ ] Support Windows - https://stackoverflow.com/a/47059064/385548 https://stackoverflow.com/questions/22470193/why-wont-go-kill-a-child-process-correctly
 
 ```yaml
 api:
