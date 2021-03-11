@@ -1,6 +1,7 @@
 # github.com/fsnotify/fsnotify v1.4.9
 ## explicit
 github.com/fsnotify/fsnotify
-# golang.org/x/sys v0.0.0-20200420163511-1957bb5e6d1f
+# golang.org/x/sys v0.0.0-20210309074719-68d13333faf2
 ## explicit
+golang.org/x/sys/internal/unsafeheader
 golang.org/x/sys/unix
