@@ -57,7 +57,7 @@ func (w *Watcher) Watch(delay time.Duration) <-chan ChangeSet {
 	// resolve add + ignore paths
 	for path, _ := range w.watch { //s
 		filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
-			if !info.IsDir() {
+			if info != nil && !info.IsDir() {
 				return nil
 			}
 			if strings.HasSuffix(path, ".git") {
