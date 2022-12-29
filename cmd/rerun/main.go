@@ -108,7 +108,7 @@ loop:
 		os.Exit(1)
 	}()
 
-	fmt.Printf("\033c%v\n", cmd)
+	fmt.Printf("%s%v\n", clear, cmd)
 	for changeSet := range watcher.Watch(200 * time.Millisecond) {
 		if err := cmd.Kill(); err != nil {
 			fmt.Printf("%v\n", err)
@@ -124,7 +124,7 @@ loop:
 		if len(changeSet.Files) > 1 {
 			plural = "s"
 		}
-		fmt.Printf("\033c\033[32m# %v file%v changed.\033[0m\n%v\n", len(changeSet.Files), plural, cmd)
+		fmt.Printf("%s%s# %v file%v changed (ie. %v)%s\n%v\n", clear, greenColor, len(changeSet.Files), plural, changeSet.FirstFile, resetColor, cmd)
 
 		if err := cmd.Start(); err != nil {
 			fmt.Printf("%v\n", err)
@@ -133,3 +133,9 @@ loop:
 
 	select {}
 }
+
+const (
+	clear      = "\033c"
+	greenColor = "\033[32m"
+	resetColor = "\033[0m"
+)

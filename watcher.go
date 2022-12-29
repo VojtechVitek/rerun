@@ -17,8 +17,9 @@ type Watcher struct {
 }
 
 type ChangeSet struct {
-	Files map[string]struct{}
-	Error error
+	FirstFile string
+	Files     map[string]struct{}
+	Error     error
 }
 
 func NewWatcher() (*Watcher, error) {
@@ -103,6 +104,9 @@ func (w *Watcher) Watch(delay time.Duration) <-chan ChangeSet {
 					// if event.Op&fsnotify.Write == fsnotify.Write {
 					// 	log.Println("modified file:", event.Name)
 					// }
+					if len(change.Files) == 0 {
+						change.FirstFile = event.Name
+					}
 					change.Files[event.Name] = struct{}{}
 
 				case err := <-w.watcher.Errors:
