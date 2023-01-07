@@ -1,6 +1,8 @@
 rerun: Re-run command on file system changes
 ============================================
 
+Credit for this library goes to https://github.com/VojtechVitek/rerun
+
 Lightweight file-watcher that re-runs given command on FS changes. It has simple CLI and optional config file. By default, it uses 200ms delay, which gives enough time for tools like git to update all directories/files within repository before killing the old process (when you switch branches etc).
 
 #### In development. Only CLI MVP works right now.
@@ -26,16 +28,6 @@ go get -u github.com/goware/rerun/cmd/rerun
 ```
 *You might need to [download Go](https://golang.org/dl/) first.*
 
-*TODO: Release page.*
-
-# TODO
-
-- [ ] Regexp matches
-- [ ] Verbose mode
-- [ ] Interactive mode
-- [ ] Config file, as an alternative to direct CLI invocation
-- [ ] Act when a new dir is added/removed
-- [ ] Support Windows - https://stackoverflow.com/a/47059064/385548 https://stackoverflow.com/questions/22470193/why-wont-go-kill-a-child-process-correctly
 
 ```yaml
 api:
@@ -57,8 +49,6 @@ test-login:
   run:
     - go test -run=Login
 ```
-
-Written in [golang](https://github.com/golang/go).
 
 Uses [fsnotify](https://github.com/fsnotify/fsnotify) behind the scenes, so technically it should work on most platforms including Linux, Mac OS and Windows.
 
