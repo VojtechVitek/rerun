@@ -64,7 +64,7 @@ loop:
 	}
 
 	if mode == argNone {
-		log.Fatal("TODO: interactive mode")
+		log.Fatal("Please see usage at https://github.com/goware/rerun")
 	}
 
 	sig := make(chan os.Signal, 1)
@@ -100,9 +100,7 @@ loop:
 				}
 			}
 		}()
-		if err := cmd.Wait(); err != nil {
-			fmt.Printf("%v\n", err)
-		}
+		cmd.Wait()
 		close(done)
 
 		os.Exit(1)
@@ -113,9 +111,7 @@ loop:
 		if err := cmd.Kill(); err != nil {
 			fmt.Printf("%v\n", err)
 		}
-		if err := cmd.Wait(); err != nil {
-			fmt.Printf("%v\n", err)
-		}
+		cmd.Wait()
 		if changeSet.Error != nil {
 			fmt.Printf("%v\n", err)
 		}
