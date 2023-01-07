@@ -6,6 +6,12 @@ help:
 install:
 	go install ./cmd/rerun
 
+.PHONY: build
+build:
+	@rm -rf ./bin/*
+	@mkdir -p ./bin
+	go build -o ./bin/rerun ./cmd/rerun
+
 .PHONY: dist
 dist:
 	@rm -rf ./dist/*
@@ -20,7 +26,3 @@ dist:
 .PHONY: test
 test:
 	go test ./...
-
-.PHONY: vendor
-vendor:
-	GO111MODULE=on go mod vendor && GO111MODULE=on go mod tidy
