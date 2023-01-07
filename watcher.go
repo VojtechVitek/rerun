@@ -17,8 +17,9 @@ type Watcher struct {
 }
 
 type ChangeSet struct {
-	Files map[string]struct{}
-	Error error
+	FirstFile string
+	Files     map[string]struct{}
+	Error     error
 }
 
 func NewWatcher() (*Watcher, error) {
@@ -57,7 +58,7 @@ func (w *Watcher) Watch(delay time.Duration) <-chan ChangeSet {
 	// resolve add + ignore paths
 	for path, _ := range w.watch { //s
 		filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
-			if !info.IsDir() {
+			if info != nil && !info.IsDir() {
 				return nil
 			}
 			if strings.HasSuffix(path, ".git") {
@@ -103,6 +104,9 @@ func (w *Watcher) Watch(delay time.Duration) <-chan ChangeSet {
 					// if event.Op&fsnotify.Write == fsnotify.Write {
 					// 	log.Println("modified file:", event.Name)
 					// }
+					if len(change.Files) == 0 {
+						change.FirstFile = event.Name
+					}
 					change.Files[event.Name] = struct{}{}
 
 				case err := <-w.watcher.Errors:
