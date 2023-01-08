@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"syscall"
 )
 
 type LinuxCmd struct {
@@ -31,10 +30,7 @@ func (c *LinuxCmd) Start() error {
 }
 
 func (c *LinuxCmd) Kill() error {
-	pid := c.cmd.Process.Pid
-	err := syscall.Kill(-pid, syscall.SIGKILL)
-	c.cmd.Process.Wait()
-	return err
+	return c.cmd.Process.Kill()
 }
 
 func (c *LinuxCmd) Wait() error {
