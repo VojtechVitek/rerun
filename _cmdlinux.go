@@ -6,6 +6,8 @@ import (
 	"os/exec"
 )
 
+// NOTE: not in use.. darwin seems to work on darwin and linux
+
 type LinuxCmd struct {
 	*command
 }

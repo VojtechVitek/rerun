@@ -21,15 +21,16 @@ func StartCommand(args ...string) (Command, error) {
 	var cmd Command
 
 	switch runtime.GOOS {
-	case "darwin", "ios":
-		cmd = NewDarwinCmd(args...)
+	// case "darwin", "ios":
+	// cmd = NewDarwinCmd(args...)
 
 	case "windows":
 		cmd = NewWindowsCmd(args...)
 
 	default:
 		// assume everything else is linux
-		cmd = NewLinuxCmd(args...)
+		cmd = NewDarwinCmd(args...)
+		// cmd = NewLinuxCmd(args...)
 	}
 
 	err := cmd.Start()
