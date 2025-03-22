@@ -16,6 +16,6 @@ build:
 test:
 	go test ./...
 
-.PHONY: test
+.PHONY: run
 run:
-	go run github.com/goware/rerun/cmd/rerun -watch ./ -ignore bin -run 'echo hi && sleep 100000000'
+	go run ./cmd/rerun -watch ./ -ignore bin '*.md' -run 'echo hi && sleep 100000000'

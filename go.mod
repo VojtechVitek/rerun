@@ -1,7 +1,9 @@
 module github.com/goware/rerun
 
-go 1.18
+go 1.23.0
 
-require github.com/fsnotify/fsnotify v1.6.0
+toolchain go1.24.1
 
-require golang.org/x/sys v0.4.0 // indirect
+require github.com/fsnotify/fsnotify v1.8.0
+
+require golang.org/x/sys v0.31.0 // indirect

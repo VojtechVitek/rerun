@@ -106,7 +106,7 @@ loop:
 		os.Exit(1)
 	}()
 
-	fmt.Printf("%s\n", clear)
+	fmt.Printf("%s\n", clear) // comment out for debugging
 	for changeSet := range watcher.Watch(200 * time.Millisecond) {
 		if err := cmd.Kill(); err != nil {
 			fmt.Printf("%v\n", err)

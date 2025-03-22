@@ -1,4 +1,4 @@
-rerun: Re-run command on file system changes
+rerun: re-run command on file system changes
 ============================================
 
 Credit for this library goes to https://github.com/VojtechVitek/rerun
@@ -12,7 +12,7 @@ Lightweight file-watcher that re-runs given command on FS changes. It has simple
 
 #### Examples:
 ```bash
-$ rerun -watch ./ -ignore vendor bin -run go run ./cmd/rerun/main.go
+$ rerun -watch ./ -ignore vendor bin '*.md' -run go run ./cmd/rerun/main.go
 ```
 ```bash
 $ rerun -watch ./ -ignore vendor bin -run sh -c 'go build -i -o ./bin/rerun ./cmd/rerun/main.go && ./bin/rerun'
