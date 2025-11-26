@@ -106,7 +106,7 @@ loop:
 		os.Exit(1)
 	}()
 
-	fmt.Printf("%s\n", clear) // comment out for debugging
+	fmt.Printf("%s\n", clearTerminal) // comment out for debugging
 	for changeSet := range watcher.Watch(200 * time.Millisecond) {
 		if err := cmd.Kill(); err != nil {
 			fmt.Printf("%v\n", err)
@@ -120,7 +120,7 @@ loop:
 		if len(changeSet.Files) > 1 {
 			plural = "s"
 		}
-		fmt.Printf("%s%s# %v file%v changed (ie. %v)%s\n", clear, greenColor, len(changeSet.Files), plural, changeSet.FirstFile, resetColor)
+		fmt.Printf("%s%s# %v file%v changed (e.g. %v)%s\n", clearTerminal, greenColor, len(changeSet.Files), plural, changeSet.FirstFile, resetColor)
 
 		if err := cmd.Start(); err != nil {
 			fmt.Printf("%v\n", err)
@@ -131,7 +131,22 @@ loop:
 }
 
 const (
-	clear      = "\033c"
+	// clearScrollbackXterm clears the scrollback buffer in terminals
+	// supporting the standard xterm sequence ESC[3J.
+	clearScrollbackXterm = "\033[3J"
+
+	// clearScreen moves the cursor to the home position (ESC[H)
+	// and clears the visible screen (ESC[2J).
+	clearScreen = "\033[H\033[2J"
+
+	// clearScrollbackITerm is iTerm2's proprietary escape code that clears
+	// the entire scrollback buffer. Required because iTerm2 ignores ESC[3J.
+	clearScrollbackITerm = "\033]1337;ClearScrollback\a"
+
+	// clearTerminal combines all sequences above to thoroughly clear both
+	// the visible screen and full scrollback history across major terminals.
+	clearTerminal = clearScrollbackXterm + clearScreen + clearScrollbackITerm
+
 	greenColor = "\033[32m"
 	resetColor = "\033[0m"
 )
