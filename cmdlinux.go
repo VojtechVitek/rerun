@@ -4,15 +4,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"syscall"
 )
-
-// NOTE: not in use.. darwin seems to work on darwin and linux
 
 type LinuxCmd struct {
 	*command
 }
 
-var _ Command = &DarwinCmd{}
+var _ Command = &LinuxCmd{}
 
 func NewLinuxCmd(args ...string) *LinuxCmd {
 	return &LinuxCmd{command: &command{args: args}}
@@ -23,6 +22,7 @@ func (c *LinuxCmd) Start() error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if err := cmd.Start(); err != nil {
 		return err
@@ -32,7 +32,21 @@ func (c *LinuxCmd) Start() error {
 }
 
 func (c *LinuxCmd) Kill() error {
-	return c.cmd.Process.Kill()
+	pid := c.cmd.Process.Pid
+
+	// Try to kill the whole process group (which we created via Setpgid: true), if possible.
+	// This should kill the command process, all its children and grandchildren.
+	if pgid, err := syscall.Getpgid(pid); err == nil {
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+	}
+
+	// Kill the process.
+	// Note: The process group kill syscall sometimes fails on Linux, so let's just do both.
+	err := syscall.Kill(-pid, syscall.SIGKILL)
+
+	c.cmd.Process.Wait()
+
+	return err
 }
 
 func (c *LinuxCmd) Wait() error {

@@ -61,51 +61,58 @@ func (w *Watcher) Watch(delay time.Duration) <-chan ChangeSet {
 
 	// resolve add + ignore paths
 	for path := range w.watch {
-		filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
-			if info == nil {
-				return nil
-			}
-
-			if info.IsDir() {
-				// Dirs
-				if strings.HasSuffix(path, ".git") {
-					//fmt.Printf("skip %v\n", path)
-					return filepath.SkipDir
+		for _, root := range expandGlobPaths(path) {
+			filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+				if err != nil {
+					return nil
 				}
 
-				if _, ok := w.ignore[path]; ok {
-					// fmt.Printf("skip %v\n", path)
-					w.ignoreDirs[path] = struct{}{}
-					return filepath.SkipDir
-				}
+				if info.IsDir() {
+					// Dirs
+					if strings.HasSuffix(path, ".git") {
+						//fmt.Printf("skip %v\n", path)
+						return filepath.SkipDir
+					}
 
-				w.watcher.Add(path)
-				// fmt.Printf("watch %v\n", path)
-				return nil
+					if _, ok := w.ignore[path]; ok {
+						// fmt.Printf("skip %v\n", path)
+						w.ignoreDirs[path] = struct{}{}
+						return filepath.SkipDir
+					}
 
-			} else {
+					w.watcher.Add(path)
+					// fmt.Printf("watch %v\n", path)
+					return nil
 
-				// Files
-				// Check if file path matches any ignore pattern
-				for ignorePath := range w.ignore {
-					if path == ignorePath || strings.HasPrefix(path, ignorePath+string(os.PathSeparator)) {
-						// Check for exact match or if the file is in an ignored directory
-						// fmt.Printf("ignore file %v\n", path)
-						w.ignoreFiles[path] = struct{}{}
-						return nil
-					} else if strings.Contains(ignorePath, "*") {
-						// Check for glob pattern match of filename
-						if matchGlobPattern(ignorePath, path) {
-							// fmt.Printf("ignore file (glob match) %v\n", path)
+				} else {
+
+					// Files
+					// Check if file path matches any ignore pattern
+					for ignorePath := range w.ignore {
+						if path == ignorePath || strings.HasPrefix(path, ignorePath+string(os.PathSeparator)) {
+							// Check for exact match or if the file is in an ignored directory
+							// fmt.Printf("ignore file %v\n", path)
 							w.ignoreFiles[path] = struct{}{}
 							return nil
+						} else if strings.Contains(ignorePath, "*") {
+							// Check for glob pattern match of filename
+							if matchGlobPattern(ignorePath, path) {
+								// fmt.Printf("ignore file (glob match) %v\n", path)
+								w.ignoreFiles[path] = struct{}{}
+								return nil
+							}
 						}
 					}
-				}
 
-				return nil
-			}
-		})
+					// Watch single-file targets directly; fsnotify only watches dirs otherwise.
+					if path == root {
+						w.watcher.Add(path)
+					}
+
+					return nil
+				}
+			})
+		}
 	}
 	//	fmt.Println()
 
@@ -182,6 +189,37 @@ func (c *ChangeSet) String() string {
 		str += "\n" + file
 	}
 	return str
+}
+
+// expandGlobPaths expands a watch entry containing glob metachars into existing paths.
+func expandGlobPaths(pattern string) []string {
+	if !strings.ContainsAny(pattern, "*?[") {
+		return []string{pattern}
+	}
+
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil
+	}
+
+	if len(matches) == 0 {
+		// A literal path can contain metachars (e.g. a dir named "foo[1]");
+		// the glob finds nothing, but the path itself may exist.
+		if _, err := os.Stat(pattern); err != nil {
+			return nil
+		}
+		return []string{pattern}
+	}
+
+	paths := make([]string, 0, len(matches))
+	for _, match := range matches {
+		if _, err := os.Stat(match); err != nil {
+			continue
+		}
+		paths = append(paths, match)
+	}
+
+	return paths
 }
 
 // matchGlobPattern checks if a path matches a glob pattern

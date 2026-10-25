@@ -113,7 +113,7 @@ loop:
 		}
 		cmd.Wait()
 		if changeSet.Error != nil {
-			fmt.Printf("%v\n", err)
+			fmt.Printf("%v\n", changeSet.Error)
 		}
 
 		plural := ""
