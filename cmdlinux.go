@@ -1,3 +1,5 @@
+//go:build linux
+
 package rerun
 
 import (
@@ -12,6 +14,8 @@ type LinuxCmd struct {
 }
 
 var _ Command = &LinuxCmd{}
+
+func newPlatformCmd(args ...string) Command { return NewLinuxCmd(args...) }
 
 func NewLinuxCmd(args ...string) *LinuxCmd {
 	return &LinuxCmd{command: &command{args: args}}

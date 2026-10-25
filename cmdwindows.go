@@ -1,3 +1,5 @@
+//go:build windows
+
 package rerun
 
 import (
@@ -12,6 +14,8 @@ type WindowsCmd struct {
 }
 
 var _ Command = &WindowsCmd{}
+
+func newPlatformCmd(args ...string) Command { return NewWindowsCmd(args...) }
 
 func NewWindowsCmd(args ...string) *WindowsCmd {
 	return &WindowsCmd{command: &command{args: args}}
