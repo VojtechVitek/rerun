@@ -1,3 +1,5 @@
+//go:build darwin
+
 package rerun
 
 import (
@@ -12,6 +14,8 @@ type DarwinCmd struct {
 }
 
 var _ Command = &DarwinCmd{}
+
+func newPlatformCmd(args ...string) Command { return NewDarwinCmd(args...) }
 
 func NewDarwinCmd(args ...string) *DarwinCmd {
 	return &DarwinCmd{command: &command{args: args}}

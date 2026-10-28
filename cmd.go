@@ -2,7 +2,6 @@ package rerun
 
 import (
 	"os/exec"
-	"runtime"
 )
 
 type Command interface {
@@ -18,20 +17,7 @@ type command struct {
 }
 
 func StartCommand(args ...string) (Command, error) {
-	var cmd Command
-
-	switch runtime.GOOS {
-	// case "darwin", "ios":
-	// cmd = NewDarwinCmd(args...)
-
-	case "windows":
-		cmd = NewWindowsCmd(args...)
-
-	default:
-		// assume everything else is linux
-		cmd = NewDarwinCmd(args...)
-		// cmd = NewLinuxCmd(args...)
-	}
+	cmd := newPlatformCmd(args...)
 
 	err := cmd.Start()
 	if err != nil {
