@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -11,68 +10,78 @@ import (
 	"github.com/golang-cz/rerun"
 )
 
-type argType int
+var version = "dev"
 
-const (
-	argNone argType = iota
-	argWatch
-	argIgnore
-	argRun
-)
+const usage = `rerun - re-run a command on file system changes
+
+Usage:
+  rerun -- <cmd>                        ad-hoc run: watch ./ and run <cmd>
+  rerun a b --except c d -- <cmd>       bare words = watchlist, --except = ignorelist
+  rerun --on a b --except c d -- <cmd>  --on is an explicit watchlist keyword
+  rerun <target>                        run a rerun.yml target (not supported yet)
+
+Lists are also read from stdin when it is not a TTY:
+  find . -name '*.go' | rerun -- go test
+
+Everything after -- is the command, passed through verbatim.
+
+Flags:
+  -delay <dur>      batch window before restarting a command (default 200ms)
+  -cooldown <dur>   minimum time between restarts (default 0s)
+  -grace <dur>      time between SIGTERM and SIGKILL (default 5s)
+  -no-gitignore     do not respect .gitignore
+  -h, -help         show this help
+  -version          show version
+
+Deprecated: -watch, -ignore and -run (use --on, --except and --).
+`
 
 func main() {
+	args, err := Parse(os.Args[1:])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "rerun: %v\n", err)
+		os.Exit(1)
+	}
+
+	switch {
+	case args.Help:
+		fmt.Fprint(os.Stdout, usage)
+		os.Exit(0)
+	case args.Version:
+		fmt.Fprintf(os.Stdout, "rerun %s\n", version)
+		os.Exit(0)
+	case args.Target != "":
+		fmt.Fprintln(os.Stderr, "rerun: rerun.yml targets are not supported yet — use: rerun -- <cmd>")
+		os.Exit(1)
+	}
+
 	watcher, err := rerun.NewWatcher()
 	if err != nil {
-		log.Fatal(err)
+		fmt.Fprintf(os.Stderr, "rerun: %v\n", err)
+		os.Exit(1)
 	}
 
-	args := os.Args[1:]
-	mode := argNone
-
-	// Parse command line arguments.
-	// -watch dirs ...
-	// -ignore dirs ...
-	// -run command ...
-loop:
-	for i, arg := range args {
-		switch mode {
-		case argNone, argWatch, argIgnore:
-			switch arg {
-			case "-watch":
-				mode = argWatch
-				continue
-			case "-ignore":
-				mode = argIgnore
-				continue
-			case "-run":
-				mode = argRun
-				continue
-			}
-		}
-
-		switch mode {
-		case argWatch:
-			watcher.Add(arg)
-		case argIgnore:
-			watcher.Ignore(arg)
-		case argRun:
-			args = args[i:]
-			break loop
-		default:
-			break loop
-		}
+	watch := args.Watch
+	if len(watch) == 0 {
+		watch = []string{"./"}
+	}
+	watcher.Add(watch...)
+	if len(args.Except) > 0 {
+		watcher.Ignore(args.Except...)
 	}
 
-	if mode == argNone {
-		log.Fatal("Please see usage at https://github.com/golang-cz/rerun")
+	delay := 200 * time.Millisecond
+	if args.Delay > 0 {
+		delay = args.Delay
 	}
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 
-	cmd, err := rerun.StartCommand(args...)
+	cmd, err := rerun.StartCommand(args.Cmd...)
 	if err != nil {
-		log.Fatal(err)
+		fmt.Fprintf(os.Stderr, "rerun: %v\n", err)
+		os.Exit(1)
 	}
 	defer cmd.Kill()
 
@@ -107,7 +116,7 @@ loop:
 	}()
 
 	fmt.Printf("%s\n", clearTerminal) // comment out for debugging
-	for changeSet := range watcher.Watch(200 * time.Millisecond) {
+	for changeSet := range watcher.Watch(delay) {
 		if err := cmd.Kill(); err != nil {
 			fmt.Printf("%v\n", err)
 		}
