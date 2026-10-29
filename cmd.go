@@ -1,28 +1,217 @@
 package rerun
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"os/exec"
+	"sync"
+	"time"
 )
 
+// DefaultGrace is how long a command gets between SIGTERM and SIGKILL.
+const DefaultGrace = 5 * time.Second
+
+// killWaitCap bounds the wait after the force kill.
+const killWaitCap = 5 * time.Second
+
+var (
+	ErrNotStarted     = errors.New("command not started")
+	ErrAlreadyRunning = errors.New("command already running")
+	ErrStillRunning   = errors.New("command still running after SIGKILL")
+)
+
+// Command is a child process that rerun owns and reaps.
+//
+// Each generation spawned by Start is reaped exactly once by an internal
+// goroutine, so a child never lingers as a zombie, however it dies.
 type Command interface {
 	Start() error
+	// Kill sends a graceful signal to the process group, waits the grace
+	// period, then force-kills whatever is left.
 	Kill() error
-	Wait() error
+	// KillForce force-kills the process group immediately, no grace period.
+	KillForce() error
+	// WaitExit blocks until the current generation has been reaped. It
+	// returns ctx.Err() if the context ends first.
+	WaitExit(ctx context.Context) error
+	// Exited reports whether the current generation has been reaped.
+	Exited() bool
+	// ExitState returns the exit code and wait error of the current
+	// generation, blocking until it is reaped.
+	ExitState() (int, error)
 	PID() string
 }
 
 type command struct {
-	cmd  *exec.Cmd
-	args []string
+	cmdline []string
+	grace   time.Duration
+
+	mu    sync.Mutex
+	cmd   *exec.Cmd
+	state *exitState
 }
 
-func StartCommand(args ...string) (Command, error) {
-	cmd := newPlatformCmd(args...)
+// exitState is one generation's reaping result. The reaper fills code and err,
+// then closes done; everyone else only reads after receiving from done.
+type exitState struct {
+	done chan struct{}
+	code int
+	err  error
+}
 
-	err := cmd.Start()
-	if err != nil {
-		return nil, err
+func newCommand(cmdline []string, grace time.Duration) *command {
+	if grace <= 0 {
+		grace = DefaultGrace
+	}
+	return &command{cmdline: cmdline, grace: grace}
+}
+
+func (c *command) Start() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.state != nil && !reaped(c.state) {
+		return ErrAlreadyRunning
 	}
 
+	cmd := newExecCmd(c.cmdline)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	st := &exitState{done: make(chan struct{}), code: -1}
+	c.cmd = cmd
+	c.state = st
+	// Exactly one Wait per generation, started now, so a child that exits by
+	// itself is reaped immediately instead of sitting as a zombie.
+	go c.reap(cmd, st)
+	return nil
+}
+
+func (c *command) reap(cmd *exec.Cmd, st *exitState) {
+	err := cmd.Wait()
+	code := -1
+	if cmd.ProcessState != nil {
+		code = cmd.ProcessState.ExitCode()
+	}
+	st.code, st.err = code, err
+	close(st.done)
+}
+
+func (c *command) Kill() error {
+	proc, st := c.current()
+	if proc == nil || reaped(st) {
+		return nil
+	}
+
+	// The signal can race an exit that already happened; that is not an error.
+	_ = signalGroup(proc, false)
+	if waitDone(st, c.grace) {
+		return nil
+	}
+
+	// Grace expired: escalate. KillForce re-reads state, so a child that died
+	// during the grace window is not signalled again.
+	return c.KillForce()
+}
+
+func (c *command) KillForce() error {
+	proc, st := c.current()
+	if proc == nil || reaped(st) {
+		return nil
+	}
+
+	_ = signalGroup(proc, true)
+	if waitDone(st, killWaitCap) {
+		return nil
+	}
+	return ErrStillRunning
+}
+
+func (c *command) WaitExit(ctx context.Context) error {
+	st := c.currentState()
+	if st == nil {
+		return ErrNotStarted
+	}
+	if ctx == nil {
+		<-st.done
+		return nil
+	}
+	select {
+	case <-st.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (c *command) Exited() bool {
+	return reaped(c.currentState())
+}
+
+func (c *command) ExitState() (int, error) {
+	st := c.currentState()
+	if st == nil {
+		return -1, ErrNotStarted
+	}
+	<-st.done
+	return st.code, st.err
+}
+
+func (c *command) PID() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cmd == nil || c.cmd.Process == nil {
+		return "PID unknown"
+	}
+	return fmt.Sprintf("PID %v", c.cmd.Process.Pid)
+}
+
+func (c *command) String() string { return c.PID() }
+
+func (c *command) current() (*exec.Cmd, *exitState) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.cmd, c.state
+}
+
+func (c *command) currentState() *exitState {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.state
+}
+
+// reaped reports whether st is a finished generation.
+func reaped(st *exitState) bool {
+	if st == nil {
+		return false
+	}
+	select {
+	case <-st.done:
+		return true
+	default:
+		return false
+	}
+}
+
+func waitDone(st *exitState, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-st.done:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
+// StartCommand spawns cmdline through the platform shell and reaps it.
+// grace defaults to DefaultGrace when non-positive.
+func StartCommand(cmdline []string, grace time.Duration) (Command, error) {
+	cmd := newPlatformCmd(cmdline, grace)
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
 	return cmd, nil
 }

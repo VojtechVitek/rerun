@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -75,52 +76,59 @@ func main() {
 		delay = args.Delay
 	}
 
+	grace := rerun.DefaultGrace
+	if args.Grace > 0 {
+		grace = args.Grace
+	}
+
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 
-	cmd, err := rerun.StartCommand(args.Cmd...)
+	cmd, err := rerun.StartCommand(args.Cmd, grace)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "rerun: %v\n", err)
 		os.Exit(1)
 	}
-	defer cmd.Kill()
 
 	go func() {
 		<-sig
 
-		if err := cmd.Kill(); err != nil {
-			fmt.Printf("%v\n", err)
-			os.Exit(1)
-		}
-
 		go func() {
-			<-sig // Double kill, exit now.
-			os.Exit(1)
+			<-sig // Second signal: skip the grace period.
+			_ = cmd.KillForce()
+			os.Exit(130)
 		}()
 
-		done := make(chan struct{}, 0)
+		if err := cmd.Kill(); err != nil {
+			fmt.Printf("%v\n", err)
+		}
+
+		done := make(chan struct{})
 		go func() {
 			for {
 				select {
 				case <-done:
 					return
 				case <-time.After(1 * time.Second):
-					fmt.Printf("\033cWaiting on PID %v\n", cmd.PID())
+					fmt.Printf("\033cWaiting on %v\n", cmd.PID())
 				}
 			}
 		}()
-		cmd.Wait()
+		_ = cmd.WaitExit(context.Background())
 		close(done)
 
-		os.Exit(1)
+		os.Exit(0)
 	}()
 
 	fmt.Printf("%s\n", clearTerminal) // comment out for debugging
 	for changeSet := range watcher.Watch(delay) {
-		if err := cmd.Kill(); err != nil {
-			fmt.Printf("%v\n", err)
+		// A command that exited by itself was already reaped by its reaper.
+		if !cmd.Exited() {
+			if err := cmd.Kill(); err != nil {
+				fmt.Printf("%v\n", err)
+			}
+			_ = cmd.WaitExit(context.Background())
 		}
-		cmd.Wait()
 		if changeSet.Error != nil {
 			fmt.Printf("%v\n", changeSet.Error)
 		}

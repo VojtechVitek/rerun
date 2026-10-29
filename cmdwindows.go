@@ -3,57 +3,31 @@
 package rerun
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"strconv"
+	"time"
 )
 
-type WindowsCmd struct {
-	*command
+func newPlatformCmd(cmdline []string, grace time.Duration) Command {
+	return newCommand(cmdline, grace)
 }
 
-var _ Command = &WindowsCmd{}
-
-func newPlatformCmd(args ...string) Command { return NewWindowsCmd(args...) }
-
-func NewWindowsCmd(args ...string) *WindowsCmd {
-	return &WindowsCmd{command: &command{args: args}}
-}
-
-func (c *WindowsCmd) Start() error {
-	cmd := exec.Command("cmd", append([]string{"/c"}, c.args...)...)
+func newExecCmd(cmdline []string) *exec.Cmd {
+	cmd := exec.Command("cmd", append([]string{"/c"}, cmdline...)...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
-
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	c.cmd = cmd
-	return nil
+	return cmd
 }
 
-func (c *WindowsCmd) Kill() error {
-	pid := c.cmd.Process.Pid
+// signalGroup: Windows has no signal a console child can handle gracefully, so
+// both the graceful and the forced pass are the same tree kill.
+func signalGroup(cmd *exec.Cmd, force bool) error {
+	if cmd.Process == nil {
+		return nil
+	}
 	// https://stackoverflow.com/a/44551450
-	kill := exec.Command("TASKKILL", "/T", "/F", "/PID", strconv.Itoa(pid))
+	kill := exec.Command("TASKKILL", "/T", "/F", "/PID", strconv.Itoa(cmd.Process.Pid))
 	return kill.Run()
-}
-
-func (c *WindowsCmd) Wait() error {
-	// Wait for the process to finish.
-	return c.cmd.Wait()
-}
-
-func (c *WindowsCmd) PID() string {
-	if c.cmd != nil {
-		return fmt.Sprintf("PID %v", c.cmd.Process.Pid)
-	} else {
-		return "PID unknown"
-	}
-}
-
-func (c *WindowsCmd) String() string {
-	return c.PID()
 }
