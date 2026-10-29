@@ -16,6 +16,7 @@ import (
 // -watch), or from a non-TTY stdin. Cmd is everything after -- verbatim.
 type Args struct {
 	Target      string
+	Targets     []string
 	Watch       []string
 	Except      []string
 	Cmd         []string
@@ -49,7 +50,6 @@ func parseArgs(argv []string, stdin io.Reader, stdinIsTTY bool, stderr io.Writer
 		listExcept
 	)
 	list := listWatch
-	bareWatchWords := 0
 	flagsSeen := false
 
 parse:
@@ -136,7 +136,6 @@ parse:
 				args.Except = append(args.Except, arg)
 			} else {
 				args.Watch = append(args.Watch, arg)
-				bareWatchWords++
 			}
 		}
 	}
@@ -146,9 +145,15 @@ parse:
 	}
 
 	if len(args.Cmd) == 0 {
-		if bareWatchWords == 1 && len(args.Except) == 0 && !flagsSeen {
-			args.Target = args.Watch[0]
+		// Bare words without any flag may name rerun.yml targets. main decides
+		// once it knows whether a config file exists.
+		if len(args.Except) == 0 && !flagsSeen {
+			args.Targets = args.Watch
 			args.Watch = nil
+			if len(args.Targets) == 1 {
+				args.Target = args.Targets[0]
+				args.Targets = nil
+			}
 			return args, nil
 		}
 		return args, errors.New(noCmdHint)

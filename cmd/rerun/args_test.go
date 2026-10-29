@@ -60,6 +60,16 @@ func TestParseGrammar(t *testing.T) {
 			want: Args{Target: "test"},
 		},
 		{
+			name: "multiple bare args are targets",
+			argv: []string{"frontend", "api"},
+			want: Args{Targets: []string{"frontend", "api"}},
+		},
+		{
+			name: "zero args defers to rerun.yml",
+			argv: nil,
+			want: Args{},
+		},
+		{
 			name: "legacy synonyms",
 			argv: []string{"-watch", "a", "-ignore", "b", "-run", "c", "d"},
 			want: Args{Watch: []string{"a"}, Except: []string{"b"}, Cmd: []string{"c", "d"}, Legacy: true},
@@ -169,11 +179,9 @@ func TestParseErrors(t *testing.T) {
 		{"bad duration", []string{"-delay", "abc", "--", "cmd"}, `invalid duration "abc"`},
 		{"bad cooldown", []string{"-cooldown", "5", "--", "cmd"}, "invalid duration"},
 		{"unknown flag", []string{"-bogus"}, `unknown flag "-bogus"`},
-		{"bare words without separator", []string{"a", "b"}, noCmdHint},
 		{"on without separator", []string{"--on", "a"}, noCmdHint},
 		{"target with flag", []string{"-delay", "1s", "test"}, noCmdHint},
 		{"target with except", []string{"test", "--except", "x"}, noCmdHint},
-		{"no args", nil, noCmdHint},
 	}
 
 	for _, tt := range tests {

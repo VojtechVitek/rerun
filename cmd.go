@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"sync"
 	"time"
@@ -43,9 +44,23 @@ type Command interface {
 	PID() string
 }
 
+// Option customizes the child process before every start.
+type Option func(*exec.Cmd)
+
+// WithStdout routes the child's stdout to w instead of os.Stdout.
+func WithStdout(w io.Writer) Option {
+	return func(cmd *exec.Cmd) { cmd.Stdout = w }
+}
+
+// WithStderr routes the child's stderr to w instead of os.Stderr.
+func WithStderr(w io.Writer) Option {
+	return func(cmd *exec.Cmd) { cmd.Stderr = w }
+}
+
 type command struct {
 	cmdline []string
 	grace   time.Duration
+	opts    []Option
 
 	mu    sync.Mutex
 	cmd   *exec.Cmd
@@ -60,11 +75,11 @@ type exitState struct {
 	err  error
 }
 
-func newCommand(cmdline []string, grace time.Duration) *command {
+func newCommand(cmdline []string, grace time.Duration, opts ...Option) *command {
 	if grace <= 0 {
 		grace = DefaultGrace
 	}
-	return &command{cmdline: cmdline, grace: grace}
+	return &command{cmdline: cmdline, grace: grace, opts: opts}
 }
 
 func (c *command) Start() error {
@@ -76,6 +91,9 @@ func (c *command) Start() error {
 	}
 
 	cmd := newExecCmd(c.cmdline)
+	for _, opt := range c.opts {
+		opt(cmd)
+	}
 	if err := cmd.Start(); err != nil {
 		return err
 	}
@@ -207,9 +225,10 @@ func waitDone(st *exitState, d time.Duration) bool {
 }
 
 // StartCommand spawns cmdline through the platform shell and reaps it.
-// grace defaults to DefaultGrace when non-positive.
-func StartCommand(cmdline []string, grace time.Duration) (Command, error) {
-	cmd := newPlatformCmd(cmdline, grace)
+// grace defaults to DefaultGrace when non-positive. Options override the
+// default stdio wiring on every generation.
+func StartCommand(cmdline []string, grace time.Duration, opts ...Option) (Command, error) {
+	cmd := newPlatformCmd(cmdline, grace, opts...)
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}

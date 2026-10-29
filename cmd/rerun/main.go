@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -16,10 +17,11 @@ var version = "dev"
 const usage = `rerun - re-run a command on file system changes
 
 Usage:
-  rerun -- <cmd>                        ad-hoc run: watch ./ and run <cmd>
-  rerun a b --except c d -- <cmd>       bare words = watchlist, --except = ignorelist
-  rerun --on a b --except c d -- <cmd>  --on is an explicit watchlist keyword
-  rerun <target>                        run a rerun.yml target (not supported yet)
+  rerun                                run all rerun.yml targets in parallel
+  rerun <target> [target...]           run specific rerun.yml targets
+  rerun -- <cmd>                       ad-hoc run: watch ./ and run <cmd>
+  rerun a b --except c d -- <cmd>      bare words = watchlist, --except = ignorelist
+  rerun --on a b --except c d -- <cmd> --on is an explicit watchlist keyword
 
 Lists are also read from stdin when it is not a TTY:
   find . -name '*.go' | rerun -- go test
@@ -51,11 +53,93 @@ func main() {
 	case args.Version:
 		fmt.Fprintf(os.Stdout, "rerun %s\n", version)
 		os.Exit(0)
-	case args.Target != "":
-		fmt.Fprintln(os.Stderr, "rerun: rerun.yml targets are not supported yet — use: rerun -- <cmd>")
-		os.Exit(1)
 	}
 
+	if len(args.Cmd) == 0 {
+		os.Exit(runConfigMode(args))
+	}
+
+	runAdHoc(args)
+}
+
+// runConfigMode runs rerun.yml targets and returns the process exit code.
+func runConfigMode(args Args) int {
+	// Several bare words only name targets when the config lists them all.
+	if len(args.Targets) > 0 {
+		cfg, err := LoadConfig(".")
+		if err != nil || !allKnown(cfg, args.Targets) {
+			fmt.Fprintf(os.Stderr, "rerun: %v\n", noCmdHint)
+			return 1
+		}
+		targets := lookupAll(cfg, args.Targets)
+		applyOverrides(targets, args)
+		return runTargets(targets, os.Stdout, nil)
+	}
+
+	cfg, err := LoadConfig(".")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "rerun: %v\n", err)
+		if args.Target == "" {
+			fmt.Fprint(os.Stdout, usage)
+		}
+		return 1
+	}
+
+	if args.Target != "" {
+		target, ok := cfg.Find(args.Target)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "rerun: unknown target %q; available: %s\n", args.Target, strings.Join(cfg.Names(), ", "))
+			return 1
+		}
+		targets := []Target{target}
+		applyOverrides(targets, args)
+		return runTargets(targets, os.Stdout, nil)
+	}
+
+	if len(cfg.Targets) == 0 {
+		fmt.Fprintf(os.Stderr, "rerun: %s defines no targets\n", cfg.Path)
+		return 1
+	}
+	targets := append([]Target(nil), cfg.Targets...)
+	applyOverrides(targets, args)
+	return runTargets(targets, os.Stdout, nil)
+}
+
+func allKnown(cfg *Config, names []string) bool {
+	for _, name := range names {
+		if _, ok := cfg.Find(name); !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func lookupAll(cfg *Config, names []string) []Target {
+	targets := make([]Target, 0, len(names))
+	for _, name := range names {
+		target, _ := cfg.Find(name)
+		targets = append(targets, target)
+	}
+	return targets
+}
+
+// applyOverrides lets CLI flags win over the target's own timeouts.
+func applyOverrides(targets []Target, args Args) {
+	for i := range targets {
+		if args.Delay > 0 {
+			targets[i].Delay = args.Delay
+		}
+		if args.Cooldown > 0 {
+			targets[i].Cooldown = args.Cooldown
+		}
+		if args.Grace > 0 {
+			targets[i].Grace = args.Grace
+		}
+	}
+}
+
+// runAdHoc is the single-command path: watch, restart on change.
+func runAdHoc(args Args) {
 	watcher, err := rerun.NewWatcher()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "rerun: %v\n", err)
