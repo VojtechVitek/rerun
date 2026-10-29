@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -14,17 +15,25 @@ func newPlatformCmd(cmdline []string, grace time.Duration, opts ...Option) Comma
 }
 
 func newExecCmd(cmdline []string) *exec.Cmd {
-	cmd := exec.Command("cmd", append([]string{"/c"}, cmdline...)...)
+	cmd := exec.Command("cmd", "/c", shellScript(cmdline))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	return cmd
 }
 
+// quoteWord double-quotes a word cmd.exe would otherwise split or expand.
+func quoteWord(word string) string {
+	if word != "" && !strings.ContainsAny(word, " \t\n\r\"&|;<>()^%") {
+		return word
+	}
+	return `"` + strings.ReplaceAll(word, `"`, `\"`) + `"`
+}
+
 // signalGroup: Windows has no signal a console child can handle gracefully, so
 // both the graceful and the forced pass are the same tree kill.
-func signalGroup(cmd *exec.Cmd, force bool) error {
-	if cmd.Process == nil {
+func signalGroup(cmd *exec.Cmd, st *exitState, force bool) error {
+	if cmd.Process == nil || reaped(st) {
 		return nil
 	}
 	// https://stackoverflow.com/a/44551450

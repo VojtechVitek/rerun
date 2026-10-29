@@ -129,7 +129,10 @@ parse:
 			break parse
 
 		default:
-			if strings.HasPrefix(arg, "-") && arg != "-" {
+			if arg == "-" {
+				return args, errors.New("`-` is reserved for stdin; pass watch paths with --on")
+			}
+			if strings.HasPrefix(arg, "-") {
 				return args, fmt.Errorf("unknown flag %q", arg)
 			}
 			if list == listExcept {
@@ -199,6 +202,10 @@ func durationFlag(argv []string, i *int, name string) (time.Duration, error) {
 	return d, nil
 }
 
+// maxStdinPaths bounds the piped watchlist so a runaway producer cannot make
+// rerun allocate without limit.
+const maxStdinPaths = 100_000
+
 func readStdinList(r io.Reader) ([]string, error) {
 	var paths []string
 	scanner := bufio.NewScanner(r)
@@ -207,6 +214,9 @@ func readStdinList(r io.Reader) ([]string, error) {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
+		}
+		if len(paths) == maxStdinPaths {
+			return nil, fmt.Errorf("stdin watchlist exceeds %d entries", maxStdinPaths)
 		}
 		paths = append(paths, line)
 	}

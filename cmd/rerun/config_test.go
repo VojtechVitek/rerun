@@ -150,6 +150,11 @@ func TestParseConfigErrors(t *testing.T) {
 			wantSub: []string{"duplicate target", "api"},
 		},
 		{
+			name:    "duplicate field",
+			content: "api:\n  cmd: a\n  cmd: b\n",
+			wantSub: []string{`target "api"`, `duplicate field "cmd"`},
+		},
+		{
 			name:    "no targets",
 			content: "\n",
 			wantSub: []string{"no targets"},
@@ -171,6 +176,22 @@ func TestParseConfigErrors(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestParseConfigNullOnIsEmptyList(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ConfigFileName)
+	writeFile(t, path, "api:\n  cmd: echo hi\n  on:\n  except: \"\"\n")
+
+	cfg, err := ParseConfig(path)
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	if len(cfg.Targets[0].On) != 0 {
+		t.Errorf("on = %q, want empty", cfg.Targets[0].On)
+	}
+	if len(cfg.Targets[0].Except) != 0 {
+		t.Errorf("except = %q, want empty", cfg.Targets[0].Except)
 	}
 }
 

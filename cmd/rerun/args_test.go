@@ -179,6 +179,8 @@ func TestParseErrors(t *testing.T) {
 		{"bad duration", []string{"-delay", "abc", "--", "cmd"}, `invalid duration "abc"`},
 		{"bad cooldown", []string{"-cooldown", "5", "--", "cmd"}, "invalid duration"},
 		{"unknown flag", []string{"-bogus"}, `unknown flag "-bogus"`},
+		{"bare dash", []string{"-", "--", "cmd"}, "reserved for stdin"},
+		{"bare dash as except", []string{"--except", "-", "--", "cmd"}, "reserved for stdin"},
 		{"on without separator", []string{"--on", "a"}, noCmdHint},
 		{"target with flag", []string{"-delay", "1s", "test"}, noCmdHint},
 		{"target with except", []string{"test", "--except", "x"}, noCmdHint},
@@ -195,6 +197,24 @@ func TestParseErrors(t *testing.T) {
 				t.Fatalf("error = %q, want substring %q", err.Error(), tt.wantSub)
 			}
 		})
+	}
+}
+
+func TestReadStdinListCap(t *testing.T) {
+	atCap := strings.Repeat("a.go\n", maxStdinPaths)
+	paths, err := readStdinList(strings.NewReader(atCap))
+	if err != nil {
+		t.Fatalf("readStdinList at the cap: %v", err)
+	}
+	if len(paths) != maxStdinPaths {
+		t.Fatalf("got %d paths, want %d", len(paths), maxStdinPaths)
+	}
+
+	overCap := strings.Repeat("a.go\n", maxStdinPaths+1)
+	if _, err := readStdinList(strings.NewReader(overCap)); err == nil {
+		t.Fatalf("readStdinList accepted %d paths, want an error", maxStdinPaths+1)
+	} else if !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("error = %q, want an \"exceeds\" message", err.Error())
 	}
 }
 

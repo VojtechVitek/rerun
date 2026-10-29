@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -11,6 +12,15 @@ import (
 
 	"github.com/golang-cz/rerun"
 )
+
+const noGitignoreWarning = "rerun: warning: -no-gitignore is not implemented yet"
+
+// warnNoGitignore reports the flag once; the gitignore engine lands later.
+func warnNoGitignore(args Args, stderr io.Writer) {
+	if args.NoGitignore {
+		fmt.Fprintln(stderr, noGitignoreWarning)
+	}
+}
 
 var version = "dev"
 
@@ -54,6 +64,8 @@ func main() {
 		fmt.Fprintf(os.Stdout, "rerun %s\n", version)
 		os.Exit(0)
 	}
+
+	warnNoGitignore(args, os.Stderr)
 
 	if len(args.Cmd) == 0 {
 		os.Exit(runConfigMode(args))
@@ -165,6 +177,9 @@ func runAdHoc(args Args) {
 		grace = args.Grace
 	}
 
+	cooldown := args.Cooldown
+	var lastStart time.Time
+
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 
@@ -173,6 +188,7 @@ func runAdHoc(args Args) {
 		fmt.Fprintf(os.Stderr, "rerun: %v\n", err)
 		os.Exit(1)
 	}
+	lastStart = time.Now()
 
 	go func() {
 		<-sig
@@ -217,6 +233,8 @@ func runAdHoc(args Args) {
 			fmt.Printf("%v\n", changeSet.Error)
 		}
 
+		waitCooldown(cooldown, lastStart)
+
 		plural := ""
 		if len(changeSet.Files) > 1 {
 			plural = "s"
@@ -226,9 +244,21 @@ func runAdHoc(args Args) {
 		if err := cmd.Start(); err != nil {
 			fmt.Printf("%v\n", err)
 		}
+		lastStart = time.Now()
 	}
 
 	select {}
+}
+
+// waitCooldown sleeps out the remainder of the cooldown window since the last
+// start; zero disables it.
+func waitCooldown(cooldown time.Duration, lastStart time.Time) {
+	if cooldown <= 0 {
+		return
+	}
+	if remaining := cooldown - time.Since(lastStart); remaining > 0 {
+		time.Sleep(remaining)
+	}
 }
 
 const (

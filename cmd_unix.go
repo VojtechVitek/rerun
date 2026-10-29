@@ -5,11 +5,12 @@ package rerun
 import (
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 )
 
 func newExecCmd(cmdline []string) *exec.Cmd {
-	cmd := exec.Command("/bin/sh", append([]string{"-c"}, cmdline...)...)
+	cmd := exec.Command("/bin/sh", "-c", shellScript(cmdline))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
@@ -18,7 +19,17 @@ func newExecCmd(cmdline []string) *exec.Cmd {
 	return cmd
 }
 
-func signalGroup(cmd *exec.Cmd, force bool) error {
+// quoteWord single-quotes a word the shell would otherwise split or expand.
+func quoteWord(word string) string {
+	if word != "" && !strings.ContainsAny(word, " \t\n\r\"'`\\$&|;<>(){}[]*?!#~") {
+		return word
+	}
+	return "'" + strings.ReplaceAll(word, "'", `'\''`) + "'"
+}
+
+// signalGroup signals the process group. A pid recycled in the nanoseconds
+// between the reaped check and the syscall is accepted as out of scope.
+func signalGroup(cmd *exec.Cmd, st *exitState, force bool) error {
 	if cmd.Process == nil {
 		return nil
 	}
@@ -28,10 +39,13 @@ func signalGroup(cmd *exec.Cmd, force bool) error {
 	}
 
 	pid := cmd.Process.Pid
+	if reaped(st) {
+		return nil
+	}
 	err := syscall.Kill(-pid, sig)
 
 	// The child may have moved itself into another group; cover that too.
-	if pgid, perr := syscall.Getpgid(pid); perr == nil && pgid != pid {
+	if pgid, perr := syscall.Getpgid(pid); perr == nil && pgid != pid && !reaped(st) {
 		err = syscall.Kill(-pgid, sig)
 	}
 	return err

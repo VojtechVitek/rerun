@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 )
@@ -124,14 +125,14 @@ func (c *command) Kill() error {
 	}
 
 	// The signal can race an exit that already happened; that is not an error.
-	_ = signalGroup(proc, false)
+	_ = signalGroup(proc, st, false)
 	if waitDone(st, c.grace) {
 		return nil
 	}
 
-	// Grace expired: escalate. KillForce re-reads state, so a child that died
-	// during the grace window is not signalled again.
-	return c.KillForce()
+	// Grace expired: escalate this generation only. A Start during the grace
+	// window must not get its child force-killed for the old one's sins.
+	return c.escalate(proc, st)
 }
 
 func (c *command) KillForce() error {
@@ -139,12 +140,30 @@ func (c *command) KillForce() error {
 	if proc == nil || reaped(st) {
 		return nil
 	}
+	return c.killForce(proc, st)
+}
 
-	_ = signalGroup(proc, true)
+// killForce force-kills one specific generation, not whatever is current.
+func (c *command) killForce(proc *exec.Cmd, st *exitState) error {
+	if reaped(st) {
+		return nil
+	}
+
+	_ = signalGroup(proc, st, true)
 	if waitDone(st, killWaitCap) {
 		return nil
 	}
 	return ErrStillRunning
+}
+
+// escalate force-kills the generation Kill captured, and only while it is
+// still the current one.
+func (c *command) escalate(proc *exec.Cmd, st *exitState) error {
+	curProc, curState := c.current()
+	if curProc != proc || curState != st {
+		return nil
+	}
+	return c.killForce(proc, st)
 }
 
 func (c *command) WaitExit(ctx context.Context) error {
@@ -222,6 +241,21 @@ func waitDone(st *exitState, d time.Duration) bool {
 	case <-timer.C:
 		return false
 	}
+}
+
+// shellScript turns command words into one shell script line. A single word
+// is taken as an already-composed command line, which is how rerun.yml passes
+// `cmd`; several words are quoted and joined so the shell sees them as
+// arguments instead of as $0, $1, ...
+func shellScript(words []string) string {
+	if len(words) == 1 {
+		return words[0]
+	}
+	quoted := make([]string, len(words))
+	for i, word := range words {
+		quoted[i] = quoteWord(word)
+	}
+	return strings.Join(quoted, " ")
 }
 
 // StartCommand spawns cmdline through the platform shell and reaps it.

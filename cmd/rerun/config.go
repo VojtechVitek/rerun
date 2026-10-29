@@ -159,9 +159,14 @@ func parseTarget(path, name string, node *yaml.Node) (Target, error) {
 	}
 
 	target := Target{Name: name, Delay: defaultDelay, Grace: rerun.DefaultGrace}
+	seen := make(map[string]bool)
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		field := node.Content[i].Value
 		value := node.Content[i+1]
+		if seen[field] {
+			return Target{}, fmt.Errorf("%s: target %q: duplicate field %q", path, name, field)
+		}
+		seen[field] = true
 
 		switch field {
 		case "desc":
@@ -227,6 +232,10 @@ func scalarField(path, name, field string, node *yaml.Node) (string, error) {
 func stringOrList(path, name, field string, node *yaml.Node) ([]string, error) {
 	switch node.Kind {
 	case yaml.ScalarNode:
+		// `on:` with no value decodes to a null scalar; that means "no paths".
+		if node.Tag == "!!null" || strings.TrimSpace(node.Value) == "" {
+			return nil, nil
+		}
 		return []string{node.Value}, nil
 
 	case yaml.SequenceNode:

@@ -3,8 +3,10 @@
 package rerun
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -43,6 +45,83 @@ func TestKillReapsProcess(t *testing.T) {
 	}
 	if code, _ := cmd.ExitState(); code == 0 {
 		t.Fatal("ExitState code = 0, want a signalled exit")
+	}
+}
+
+// TestStartCommandJoinsWordsWithQuoting proves the words reach the command as
+// arguments instead of becoming $0, $1, ... of the sh -c wrapper.
+func TestStartCommandJoinsWordsWithQuoting(t *testing.T) {
+	var out bytes.Buffer
+	cmd, err := StartCommand([]string{"echo", "hi there", "x"}, time.Second, WithStdout(&out))
+	if err != nil {
+		t.Fatalf("StartCommand: %v", err)
+	}
+	if err := cmd.WaitExit(context.Background()); err != nil {
+		t.Fatalf("WaitExit: %v", err)
+	}
+	if got := strings.TrimSpace(out.String()); got != "hi there x" {
+		t.Fatalf("output = %q, want %q", got, "hi there x")
+	}
+}
+
+// TestStartCommandQuotesShellMetachars proves metacharacters stay literal.
+func TestStartCommandQuotesShellMetachars(t *testing.T) {
+	var out bytes.Buffer
+	cmd, err := StartCommand([]string{"echo", "a'b", "$HOME", "x;y"}, time.Second, WithStdout(&out))
+	if err != nil {
+		t.Fatalf("StartCommand: %v", err)
+	}
+	if err := cmd.WaitExit(context.Background()); err != nil {
+		t.Fatalf("WaitExit: %v", err)
+	}
+	if got := strings.TrimSpace(out.String()); got != "a'b $HOME x;y" {
+		t.Fatalf("output = %q, want %q", got, "a'b $HOME x;y")
+	}
+}
+
+// TestStartCommandSingleWordIsRawScript locks in the rerun.yml `cmd` shape: a
+// lone word is already a shell line and must not be quoted as a whole.
+func TestStartCommandSingleWordIsRawScript(t *testing.T) {
+	var out bytes.Buffer
+	cmd, err := StartCommand([]string{"echo one two"}, time.Second, WithStdout(&out))
+	if err != nil {
+		t.Fatalf("StartCommand: %v", err)
+	}
+	if err := cmd.WaitExit(context.Background()); err != nil {
+		t.Fatalf("WaitExit: %v", err)
+	}
+	if got := strings.TrimSpace(out.String()); got != "one two" {
+		t.Fatalf("output = %q, want %q", got, "one two")
+	}
+}
+
+// TestEscalateSparesNewerGeneration covers the Kill grace window: by the time
+// escalation fires, gen A may already be reaped and gen B current. Escalating
+// the captured generation must not touch B.
+//
+// The public race is sub-microsecond and cannot be hit from a test: Start only
+// accepts a new generation once the old one is reaped, and that reaping makes
+// Kill's grace wait succeed. So the identity check is driven directly.
+func TestEscalateSparesNewerGeneration(t *testing.T) {
+	c := newCommand([]string{"sleep 30"}, time.Second)
+	if err := c.Start(); err != nil {
+		t.Fatalf("Start gen A: %v", err)
+	}
+	procA, stA := c.current()
+
+	if err := c.KillForce(); err != nil {
+		t.Fatalf("KillForce gen A: %v", err)
+	}
+	if err := c.Start(); err != nil {
+		t.Fatalf("Start gen B: %v", err)
+	}
+	t.Cleanup(func() { _ = c.KillForce() })
+
+	if err := c.escalate(procA, stA); err != nil {
+		t.Fatalf("escalate gen A: %v", err)
+	}
+	if c.Exited() {
+		t.Fatal("escalating gen A force-killed the newer generation B")
 	}
 }
 
