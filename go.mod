@@ -1,4 +1,4 @@
-module github.com/goware/rerun
+module github.com/golang-cz/rerun
 
 go 1.27.3
 

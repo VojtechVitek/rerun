@@ -24,7 +24,7 @@ $ cd tests && rerun -watch '*_test.go' ../pkg -ignore vendor bin -run go test -r
 # Installation
 
 ```bash
-go get -u github.com/goware/rerun/cmd/rerun
+go get -u github.com/golang-cz/rerun/cmd/rerun
 ```
 *You might need to [download Go](https://golang.org/dl/) first.*
 

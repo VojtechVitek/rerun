@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/goware/rerun"
+	"github.com/golang-cz/rerun"
 )
 
 type argType int
@@ -64,7 +64,7 @@ loop:
 	}
 
 	if mode == argNone {
-		log.Fatal("Please see usage at https://github.com/goware/rerun")
+		log.Fatal("Please see usage at https://github.com/golang-cz/rerun")
 	}
 
 	sig := make(chan os.Signal, 1)
