@@ -118,8 +118,8 @@ b:
 
 	waitForOutput(t, out, "[a] a-finished", 3*time.Second)
 	waitForOutput(t, out, "[b] b-finished", 3*time.Second)
-	waitForOutput(t, out, "[a] exited 0", 3*time.Second)
-	waitForOutput(t, out, "[b] exited 0", 3*time.Second)
+	waitForOutput(t, out, "[a] exited (status 0)", 3*time.Second)
+	waitForOutput(t, out, "[b] exited (status 0)", 3*time.Second)
 
 	if got := readFile(t, filepath.Join(dir, "a.out")); got != "a\n" {
 		t.Errorf("a.out = %q, want %q", got, "a\n")
@@ -140,7 +140,7 @@ func TestRunTargetsSelfExitDoesNotRestart(t *testing.T) {
 `)
 
 	count := filepath.Join(dir, "count.txt")
-	waitForOutput(t, out, "[t] exited 0", 3*time.Second)
+	waitForOutput(t, out, "[t] exited (status 0)", 3*time.Second)
 	waitForCount(t, count, 1, 2*time.Second)
 
 	// A self-exiting target must stay down until something changes.
@@ -151,6 +151,19 @@ func TestRunTargetsSelfExitDoesNotRestart(t *testing.T) {
 
 	writeFile(t, filepath.Join(dir, "src", "change.txt"), "x")
 	waitForCount(t, count, 2, 3*time.Second)
+
+	if got := stop(); got != 0 {
+		t.Errorf("exit code = %d, want 0", got)
+	}
+}
+
+func TestRunTargetsReportsSignalExit(t *testing.T) {
+	out, stop, _ := startRunner(t, `t:
+  on: src
+  cmd: kill -TERM $$
+`)
+
+	waitForOutput(t, out, "[t] exited (signal SIGTERM)", 3*time.Second)
 
 	if got := stop(); got != 0 {
 		t.Errorf("exit code = %d, want 0", got)

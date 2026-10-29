@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -71,7 +73,7 @@ func main() {
 		os.Exit(runConfigMode(args))
 	}
 
-	runAdHoc(args)
+	runAdHoc(args, os.Stdout)
 }
 
 // runConfigMode runs rerun.yml targets and returns the process exit code.
@@ -151,7 +153,11 @@ func applyOverrides(targets []Target, args Args) {
 }
 
 // runAdHoc is the single-command path: watch, restart on change.
-func runAdHoc(args Args) {
+func runAdHoc(args Args, out io.Writer) {
+	if out == nil {
+		out = os.Stdout
+	}
+
 	watcher, err := rerun.NewWatcher()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "rerun: %v\n", err)
@@ -190,17 +196,22 @@ func runAdHoc(args Args) {
 	}
 	lastStart = time.Now()
 
+	run := &adHocRun{cmd: cmd, out: out, lines: &sync.Mutex{}}
+	run.watchGeneration()
+
 	go func() {
 		<-sig
 
 		go func() {
 			<-sig // Second signal: skip the grace period.
+			run.markKilled()
 			_ = cmd.KillForce()
 			os.Exit(130)
 		}()
 
+		run.markKilled()
 		if err := cmd.Kill(); err != nil {
-			fmt.Printf("%v\n", err)
+			run.printf("%v\n", err)
 		}
 
 		done := make(chan struct{})
@@ -210,7 +221,7 @@ func runAdHoc(args Args) {
 				case <-done:
 					return
 				case <-time.After(1 * time.Second):
-					fmt.Printf("\033cWaiting on %v\n", cmd.PID())
+					run.printf("\033cWaiting on %v\n", cmd.PID())
 				}
 			}
 		}()
@@ -220,17 +231,11 @@ func runAdHoc(args Args) {
 		os.Exit(0)
 	}()
 
-	fmt.Printf("%s\n", clearTerminal) // comment out for debugging
+	run.printf("%s\n", clearTerminal) // comment out for debugging
 	for changeSet := range watcher.Watch(delay) {
-		// A command that exited by itself was already reaped by its reaper.
-		if !cmd.Exited() {
-			if err := cmd.Kill(); err != nil {
-				fmt.Printf("%v\n", err)
-			}
-			_ = cmd.WaitExit(context.Background())
-		}
+		run.killCurrent()
 		if changeSet.Error != nil {
-			fmt.Printf("%v\n", changeSet.Error)
+			run.printf("%v\n", changeSet.Error)
 		}
 
 		waitCooldown(cooldown, lastStart)
@@ -239,15 +244,86 @@ func runAdHoc(args Args) {
 		if len(changeSet.Files) > 1 {
 			plural = "s"
 		}
-		fmt.Printf("%s%s# %v file%v changed (e.g. %v)%s\n", clearTerminal, greenColor, len(changeSet.Files), plural, changeSet.FirstFile, resetColor)
+		run.printf("%s%s# %v file%v changed (e.g. %v)%s\n", clearTerminal, greenColor, len(changeSet.Files), plural, changeSet.FirstFile, resetColor)
 
 		if err := cmd.Start(); err != nil {
-			fmt.Printf("%v\n", err)
+			run.printf("%v\n", err)
 		}
 		lastStart = time.Now()
+		run.watchGeneration()
 	}
 
 	select {}
+}
+
+// adHocRun owns the ad-hoc child across restarts and reports the generation
+// exits rerun did not cause.
+type adHocRun struct {
+	cmd   rerun.Command
+	out   io.Writer
+	lines *sync.Mutex
+
+	mu sync.Mutex
+	// killed marks the generation rerun is about to restart or shut down.
+	killed *atomic.Int32
+	// done closes once that generation's watcher has finished.
+	done <-chan struct{}
+}
+
+func (r *adHocRun) printf(format string, args ...any) {
+	r.lines.Lock()
+	defer r.lines.Unlock()
+	fmt.Fprintf(r.out, format, args...)
+}
+
+// watchGeneration prints the current generation's exit exactly once, unless
+// rerun killed it to restart or to shut down.
+func (r *adHocRun) watchGeneration() {
+	killed := new(atomic.Int32)
+	done := make(chan struct{})
+
+	r.mu.Lock()
+	r.killed, r.done = killed, done
+	r.mu.Unlock()
+
+	go func() {
+		defer close(done)
+		_ = r.cmd.WaitExit(context.Background())
+		if killed.Load() != 0 {
+			return
+		}
+		r.printf("rerun: exited (%s) — waiting for changes\n", exitDescription(r.cmd))
+	}()
+}
+
+// killCurrent stops the current generation and waits for its watcher, so a
+// restart kill is never reported as a self-exit.
+func (r *adHocRun) killCurrent() {
+	r.markKilled()
+
+	// A command that exited by itself was already reaped by its reaper.
+	if !r.cmd.Exited() {
+		if err := r.cmd.Kill(); err != nil {
+			r.printf("%v\n", err)
+		}
+		_ = r.cmd.WaitExit(context.Background())
+	}
+
+	r.mu.Lock()
+	done := r.done
+	r.mu.Unlock()
+	if done != nil {
+		<-done
+	}
+}
+
+func (r *adHocRun) markKilled() {
+	r.mu.Lock()
+	killed := r.killed
+	r.mu.Unlock()
+	if killed != nil {
+		killed.Store(1)
+	}
 }
 
 // waitCooldown sleeps out the remainder of the cooldown window since the last

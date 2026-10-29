@@ -250,12 +250,7 @@ func (r *targetRunner) reportExit() {
 		return
 	}
 
-	code, _ := cmd.ExitState()
-	if code < 0 {
-		r.printf("[%s] exited — waiting for changes\n", r.target.Name)
-		return
-	}
-	r.printf("[%s] exited %d — waiting for changes\n", r.target.Name, code)
+	r.printf("[%s] exited (%s) — waiting for changes\n", r.target.Name, exitDescription(cmd))
 }
 
 // killCurrent stops the current generation, waiting the grace period.
