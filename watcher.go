@@ -1,6 +1,7 @@
 package rerun
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -10,6 +11,9 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 )
+
+// errClosed aborts the initial walk when Close lands while it runs.
+var errClosed = errors.New("watcher closed")
 
 type Watcher struct {
 	watcher     *fsnotify.Watcher
@@ -72,6 +76,9 @@ func (w *Watcher) Watch(delay time.Duration) <-chan ChangeSet {
 				filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 					if err != nil {
 						return nil
+					}
+					if w.closed() {
+						return errClosed
 					}
 
 					if info.IsDir() {
@@ -175,7 +182,7 @@ func (w *Watcher) Watch(delay time.Duration) <-chan ChangeSet {
 							timer = time.NewTimer(delay)
 							timeoutC = timer.C
 						} else {
-							timer.Reset(delay)
+							resetTimer(timer, delay)
 						}
 
 						if len(change.Files) == 0 {
@@ -214,6 +221,29 @@ func (w *Watcher) Watch(delay time.Duration) <-chan ChangeSet {
 	})
 
 	return changes
+}
+
+// resetTimer restarts t for another d. A value a fired timer already parked
+// in t.C must be drained first: Reset alone would deliver it at once and split
+// the batch the event just extended.
+func resetTimer(t *time.Timer, d time.Duration) {
+	if !t.Stop() {
+		select {
+		case <-t.C:
+		default:
+		}
+	}
+	t.Reset(d)
+}
+
+// closed reports whether Close has been called.
+func (w *Watcher) closed() bool {
+	select {
+	case <-w.done:
+		return true
+	default:
+		return false
+	}
 }
 
 // Close stops the watcher. It is safe to call more than once.

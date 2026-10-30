@@ -1,14 +1,10 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
-	"time"
 
 	"github.com/golang-cz/rerun"
 )
@@ -71,7 +67,7 @@ func main() {
 		os.Exit(runConfigMode(args))
 	}
 
-	runAdHoc(args, os.Stdout)
+	os.Exit(runAdHoc(args, os.Stdout, nil))
 }
 
 // runConfigMode runs rerun.yml targets and returns the process exit code.
@@ -150,171 +146,22 @@ func applyOverrides(targets []Target, args Args) {
 	}
 }
 
-// runAdHoc is the single-command path: watch, restart on change.
-func runAdHoc(args Args, out io.Writer) {
-	if out == nil {
-		out = os.Stdout
-	}
-
-	watcher, err := rerun.NewWatcher()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "rerun: %v\n", err)
-		os.Exit(1)
-	}
-
-	watch := args.Watch
-	if len(watch) == 0 {
-		watch = []string{"./"}
-	}
-	watcher.Add(watch...)
-	if len(args.Except) > 0 {
-		watcher.Ignore(args.Except...)
-	}
-
-	delay := 200 * time.Millisecond
-	if args.Delay > 0 {
-		delay = args.Delay
-	}
-
-	grace := rerun.DefaultGrace
-	if args.Grace > 0 {
-		grace = args.Grace
-	}
-
-	cooldown := args.Cooldown
-	var lastStart time.Time
-
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
-
-	cmd, err := rerun.StartCommand(args.Cmd, grace)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "rerun: %v\n", err)
-		os.Exit(1)
-	}
-	lastStart = time.Now()
-
-	printf := func(format string, a ...any) { fmt.Fprintf(out, format, a...) }
-
-	exited := watchAdHocExit(cmd)
-
-	go func() {
-		<-sig
-
-		go func() {
-			<-sig // Second signal: skip the grace period.
-			_ = cmd.KillForce()
-			os.Exit(130)
-		}()
-
-		if err := cmd.Kill(); err != nil {
-			printf("%v\n", err)
-		}
-
-		done := make(chan struct{})
-		go func() {
-			for {
-				select {
-				case <-done:
-					return
-				case <-time.After(1 * time.Second):
-					printf("\033cWaiting on %v\n", cmd.PID())
-				}
-			}
-		}()
-		_ = cmd.WaitExit(context.Background())
-		close(done)
-
-		os.Exit(0)
-	}()
-
-	printf("%s\n", clearTerminal) // comment out for debugging
-	changes := watcher.Watch(delay)
-	for {
-		select {
-		case changeSet, ok := <-changes:
-			if !ok {
-				return
-			}
-
-			// A command that exited by itself was already reaped.
-			if !cmd.Exited() {
-				if err := cmd.Kill(); err != nil {
-					printf("%v\n", err)
-				}
-				_ = cmd.WaitExit(context.Background())
-			}
-			exited = nil // a generation rerun killed is never reported
-
-			if changeSet.Error != nil {
-				printf("%v\n", changeSet.Error)
-			}
-
-			waitCooldown(cooldown, lastStart)
-
-			plural := ""
-			if len(changeSet.Files) > 1 {
-				plural = "s"
-			}
-			printf("%s%s# %v file%v changed (e.g. %v)%s\n", clearTerminal, greenColor, len(changeSet.Files), plural, changeSet.FirstFile, resetColor)
-
-			if err := cmd.Start(); err != nil {
-				printf("%v\n", err)
-			}
-			lastStart = time.Now()
-			exited = watchAdHocExit(cmd)
-
-		case res := <-exited:
-			printf("rerun: exited (%s) — waiting for changes\n", describeExit(res.code, res.err))
-			exited = nil // report each generation at most once
-		}
-	}
+// adHocTarget is the synthetic nameless target for `rerun -- <cmd>`. An empty
+// Name is what selects the raw passthrough output mode.
+func adHocTarget(args Args) Target {
+	targets := []Target{{
+		Cmd:    rerun.ShellScript(args.Cmd),
+		On:     args.Watch,
+		Except: args.Except,
+		Delay:  defaultDelay,
+		Grace:  rerun.DefaultGrace,
+	}}
+	applyOverrides(targets, args)
+	return targets[0]
 }
 
-// exitResult is one generation's reap snapshot, taken when the child exits.
-type exitResult struct {
-	code int
-	err  error
+// runAdHoc is the single-command path: watch, restart on change. A nil
+// signals channel installs the default handlers.
+func runAdHoc(args Args, out io.Writer, signals <-chan os.Signal) int {
+	return runTargets([]Target{adHocTarget(args)}, out, signals)
 }
-
-// watchAdHocExit delivers the generation's exit as soon as it is reaped.
-func watchAdHocExit(cmd rerun.Command) <-chan exitResult {
-	exited := make(chan exitResult, 1)
-	go func() {
-		code, err := cmd.ExitState()
-		exited <- exitResult{code: code, err: err}
-	}()
-	return exited
-}
-
-// waitCooldown sleeps out the remainder of the cooldown window since the last
-// start; zero disables it.
-func waitCooldown(cooldown time.Duration, lastStart time.Time) {
-	if cooldown <= 0 {
-		return
-	}
-	if remaining := cooldown - time.Since(lastStart); remaining > 0 {
-		time.Sleep(remaining)
-	}
-}
-
-const (
-	// clearScrollbackXterm clears the scrollback buffer in terminals
-	// supporting the standard xterm sequence ESC[3J.
-	clearScrollbackXterm = "\033[3J"
-
-	// clearScreen moves the cursor to the home position (ESC[H)
-	// and clears the visible screen (ESC[2J).
-	clearScreen = "\033[H\033[2J"
-
-	// clearScrollbackITerm is iTerm2's proprietary escape code that clears
-	// the entire scrollback buffer. Required because iTerm2 ignores ESC[3J.
-	clearScrollbackITerm = "\033]1337;ClearScrollback\a"
-
-	// clearTerminal combines all sequences above to thoroughly clear both
-	// the visible screen and full scrollback history across major terminals.
-	clearTerminal = clearScrollbackXterm + clearScreen + clearScrollbackITerm
-
-	greenColor = "\033[32m"
-	resetColor = "\033[0m"
-)

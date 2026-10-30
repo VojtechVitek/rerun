@@ -237,6 +237,33 @@ func TestCloseIdempotent(t *testing.T) {
 	}
 }
 
+// A fired timer value must not survive a reset, or the batch an event just
+// extended would be delivered at once instead of after another delay.
+func TestResetTimerDrainsFiredValue(t *testing.T) {
+	timer := time.NewTimer(time.Millisecond)
+	defer timer.Stop()
+	time.Sleep(50 * time.Millisecond) // let it fire and park a value in t.C
+
+	resetTimer(timer, time.Hour)
+	select {
+	case <-timer.C:
+		t.Fatal("stale timer value survived the reset")
+	default:
+	}
+}
+
+func TestResetTimerRearms(t *testing.T) {
+	timer := time.NewTimer(time.Hour)
+	defer timer.Stop()
+
+	resetTimer(timer, time.Millisecond)
+	select {
+	case <-timer.C:
+	case <-time.After(time.Second):
+		t.Fatal("timer did not fire after the reset")
+	}
+}
+
 func TestWatchSecondCallReturnsNil(t *testing.T) {
 	dir := t.TempDir()
 	w, err := NewWatcher()

@@ -99,6 +99,20 @@ func waitForCount(t *testing.T, path string, want int, timeout time.Duration) {
 	t.Fatalf("timed out waiting for %d lines in %s, got %d", want, path, last)
 }
 
+// waitForStableCount fails as soon as path grows past want, and only passes
+// once the whole window has elapsed without a new line. A negative assertion
+// needs a window; polling makes a regression fail at once instead of late.
+func waitForStableCount(t *testing.T, path string, want int, window time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(window)
+	for time.Now().Before(deadline) {
+		if got := countLines(path); got != want {
+			t.Fatalf("%s has %d lines within %v, want %d", path, got, window, want)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func countLines(path string) int {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -144,10 +158,7 @@ func TestRunTargetsSelfExitDoesNotRestart(t *testing.T) {
 	waitForCount(t, count, 1, 2*time.Second)
 
 	// A self-exiting target must stay down until something changes.
-	time.Sleep(300 * time.Millisecond)
-	if got := countLines(count); got != 1 {
-		t.Fatalf("target restarted on its own: %d ticks", got)
-	}
+	waitForStableCount(t, count, 1, 300*time.Millisecond)
 
 	writeFile(t, filepath.Join(dir, "src", "change.txt"), "x")
 	waitForCount(t, count, 2, 3*time.Second)
@@ -190,10 +201,7 @@ func TestRunTargetsCooldown(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "src", "c.txt"), "c")
 	writeFile(t, filepath.Join(dir, "src", "d.txt"), "d")
 
-	time.Sleep(300 * time.Millisecond)
-	if got := countLines(count); got != 2 {
-		t.Errorf("cooldown not honoured: %d ticks after 300ms, want 2", got)
-	}
+	waitForStableCount(t, count, 2, 500*time.Millisecond)
 
 	waitForCount(t, count, 3, 3*time.Second)
 

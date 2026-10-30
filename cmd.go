@@ -242,11 +242,11 @@ func waitDone(st *exitState, d time.Duration) bool {
 	}
 }
 
-// shellScript turns command words into one shell script line. A single word
+// ShellScript turns command words into one shell script line. A single word
 // is taken as an already-composed command line, which is how rerun.yml passes
 // `cmd`; several words are quoted and joined so the shell sees them as
 // arguments instead of as $0, $1, ...
-func shellScript(words []string) string {
+func ShellScript(words []string) string {
 	if len(words) == 1 {
 		return words[0]
 	}

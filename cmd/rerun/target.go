@@ -47,7 +47,7 @@ func runTargets(targets []Target, out io.Writer, signals <-chan os.Signal) int {
 			defer wg.Done()
 			if err := r.run(ctx); err != nil {
 				atomic.StoreInt32(&failed, 1)
-				r.printf("rerun: %s: %v\n", r.target.Name, err)
+				r.printf("rerun: %s%v\n", r.label(), err)
 			}
 		}(r)
 	}
@@ -132,6 +132,18 @@ func (r *targetRunner) run(ctx context.Context) error {
 	}
 	defer watcher.Close()
 
+	// Close the watcher on shutdown: the initial walk below can take seconds on
+	// a big tree and would otherwise hold the whole run back.
+	closeWatcher := make(chan struct{})
+	defer close(closeWatcher)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = watcher.Close()
+		case <-closeWatcher:
+		}
+	}()
+
 	on := r.target.On
 	if len(on) == 0 {
 		on = []string{"./"}
@@ -141,11 +153,16 @@ func (r *targetRunner) run(ctx context.Context) error {
 		watcher.Ignore(r.target.Except...)
 	}
 
-	changes := watcher.Watch(r.target.Delay)
-
+	// Start before the watch walk: the walk can take seconds on a big tree,
+	// and the command's output must not wait for it.
 	if err := r.start(); err != nil {
 		return err
 	}
+	if r.raw() {
+		r.printf("%s\n", clearTerminal) // comment out for debugging
+	}
+
+	changes := watcher.Watch(r.target.Delay)
 
 	for {
 		select {
@@ -169,7 +186,11 @@ func (r *targetRunner) run(ctx context.Context) error {
 
 func (r *targetRunner) handleChange(ctx context.Context, changeSet rerun.ChangeSet) {
 	if changeSet.Error != nil {
-		r.printf("[%s] watcher error: %v\n", r.target.Name, changeSet.Error)
+		if r.raw() {
+			r.printf("%v\n", changeSet.Error)
+		} else {
+			r.printf("[%s] watcher error: %v\n", r.target.Name, changeSet.Error)
+		}
 		return
 	}
 
@@ -184,29 +205,35 @@ func (r *targetRunner) handleChange(ctx context.Context, changeSet rerun.ChangeS
 	if len(changeSet.Files) > 1 {
 		plural = "s"
 	}
-	r.printf("[%s] %d file%s changed (e.g. %s)\n", r.target.Name, len(changeSet.Files), plural, changeSet.FirstFile)
+	if r.raw() {
+		r.printf("%s%s# %d file%s changed (e.g. %s)%s\n", clearTerminal, greenColor,
+			len(changeSet.Files), plural, changeSet.FirstFile, resetColor)
+	} else {
+		r.printf("[%s] %d file%s changed (e.g. %s)\n", r.target.Name, len(changeSet.Files), plural, changeSet.FirstFile)
+	}
 
 	if err := r.start(); err != nil {
-		r.printf("rerun: %s: %v\n", r.target.Name, err)
+		r.printf("rerun: %s%v\n", r.label(), err)
 	}
 }
 
-// start spawns a new generation with its own output pipe.
+// start spawns a new generation.
 func (r *targetRunner) start() error {
-	pr, pw, err := os.Pipe()
+	var (
+		cmd rerun.Command
+		pw  *os.File
+		err error
+	)
+	if r.raw() {
+		// The ad-hoc command is passed through raw: no pipe, no prefixing.
+		cmd, err = rerun.StartCommand([]string{r.target.Cmd}, r.target.Grace, rerun.WithStdout(r.out))
+	} else {
+		cmd, pw, err = r.startPiped()
+	}
 	if err != nil {
 		return err
 	}
 
-	cmd, err := rerun.StartCommand([]string{r.target.Cmd}, r.target.Grace,
-		rerun.WithStdout(pw), rerun.WithStderr(pw))
-	if err != nil {
-		_ = pw.Close()
-		_ = pr.Close()
-		return err
-	}
-
-	go r.prefix(pr)
 	exited := r.watchGeneration(cmd, pw)
 
 	r.mu.Lock()
@@ -218,13 +245,34 @@ func (r *targetRunner) start() error {
 	return nil
 }
 
+// startPiped spawns a generation whose output is prefixed line by line.
+func (r *targetRunner) startPiped() (rerun.Command, *os.File, error) {
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	cmd, err := rerun.StartCommand([]string{r.target.Cmd}, r.target.Grace,
+		rerun.WithStdout(pw), rerun.WithStderr(pw))
+	if err != nil {
+		_ = pw.Close()
+		_ = pr.Close()
+		return nil, nil, err
+	}
+
+	go r.prefix(pr)
+	return cmd, pw, nil
+}
+
 // watchGeneration closes the pipe writer once the generation is reaped, which
 // unblocks the prefixer's read side.
 func (r *targetRunner) watchGeneration(cmd rerun.Command, pw *os.File) <-chan struct{} {
 	exited := make(chan struct{})
 	go func() {
 		_ = cmd.WaitExit(context.Background())
-		_ = pw.Close()
+		if pw != nil {
+			_ = pw.Close()
+		}
 		close(exited)
 	}()
 	return exited
@@ -251,7 +299,24 @@ func (r *targetRunner) reportExit() {
 	}
 
 	code, err := cmd.ExitState()
-	r.printf("[%s] exited (%s) — waiting for changes\n", r.target.Name, describeExit(code, err))
+	status := describeExit(code, err)
+	if r.raw() {
+		r.printf("rerun: exited (%s) — waiting for changes\n", status)
+		return
+	}
+	r.printf("[%s] exited (%s) — waiting for changes\n", r.target.Name, status)
+}
+
+// raw reports whether the target passes output through unprefixed. The ad-hoc
+// command is the only nameless target.
+func (r *targetRunner) raw() bool { return r.target.Name == "" }
+
+// label is the target's identity in rerun's own messages.
+func (r *targetRunner) label() string {
+	if r.raw() {
+		return ""
+	}
+	return r.target.Name + ": "
 }
 
 // killCurrent stops the current generation, waiting the grace period.
@@ -318,3 +383,24 @@ func (r *targetRunner) printf(format string, args ...any) {
 	defer r.lines.Unlock()
 	fmt.Fprintf(r.out, format, args...)
 }
+
+const (
+	// clearScrollbackXterm clears the scrollback buffer in terminals
+	// supporting the standard xterm sequence ESC[3J.
+	clearScrollbackXterm = "\033[3J"
+
+	// clearScreen moves the cursor to the home position (ESC[H)
+	// and clears the visible screen (ESC[2J).
+	clearScreen = "\033[H\033[2J"
+
+	// clearScrollbackITerm is iTerm2's proprietary escape code that clears
+	// the entire scrollback buffer. Required because iTerm2 ignores ESC[3J.
+	clearScrollbackITerm = "\033]1337;ClearScrollback\a"
+
+	// clearTerminal combines all sequences above to thoroughly clear both
+	// the visible screen and full scrollback history across major terminals.
+	clearTerminal = clearScrollbackXterm + clearScreen + clearScrollbackITerm
+
+	greenColor = "\033[32m"
+	resetColor = "\033[0m"
+)

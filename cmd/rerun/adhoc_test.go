@@ -6,13 +6,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
 
-// startAdHoc boots runAdHoc on a temp watch dir. runAdHoc exits only on a
-// signal, so the test leaves it running and only observes its output.
-func startAdHoc(t *testing.T, script string) (out *safeBuffer, dir, src string) {
+// startAdHoc boots the ad-hoc path on a temp watch dir. The returned stop
+// function shuts the run down once with SIGINT and returns its exit code.
+func startAdHoc(t *testing.T, script string) (out *safeBuffer, stop func() int, dir, src string) {
 	t.Helper()
 
 	dir = t.TempDir()
@@ -20,25 +22,107 @@ func startAdHoc(t *testing.T, script string) (out *safeBuffer, dir, src string) 
 	if err := os.MkdirAll(src, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	code := filepath.Join(dir, "code")
-	writeFile(t, code, "3")
+	codePath := filepath.Join(dir, "code")
+	writeFile(t, codePath, "3")
 
-	script = strings.ReplaceAll(script, "{code}", code)
+	script = strings.ReplaceAll(script, "{code}", codePath)
 	script = strings.ReplaceAll(script, "{dir}", dir)
 
 	out = &safeBuffer{}
-	go runAdHoc(Args{
-		Watch: []string{src},
-		Cmd:   []string{script},
-		Delay: 20 * time.Millisecond,
-		Grace: 500 * time.Millisecond,
-	}, out)
+	signals := make(chan os.Signal, 2)
+	exitCode := make(chan int, 1)
+	go func() {
+		exitCode <- runAdHoc(Args{
+			Watch: []string{src},
+			Cmd:   []string{script},
+			Delay: 20 * time.Millisecond,
+			Grace: 500 * time.Millisecond,
+		}, out, signals)
+	}()
 
-	return out, dir, src
+	var once sync.Once
+	code := -1
+	stop = func() int {
+		once.Do(func() {
+			select {
+			case signals <- syscall.SIGINT:
+			default:
+			}
+			select {
+			case code = <-exitCode:
+			case <-time.After(5 * time.Second):
+				t.Error("ad-hoc run did not stop after SIGINT")
+			}
+		})
+		return code
+	}
+	t.Cleanup(func() { stop() })
+
+	return out, stop, dir, src
 }
 
+// The command's own output is passed through raw: no target prefix, no
+// reformatting, and the screen is cleared exactly once at startup.
+func TestAdHocPassesOutputThroughRaw(t *testing.T) {
+	out, stop, _, src := startAdHoc(t, "echo adhoc-marker; sleep 10")
+
+	waitForOutput(t, out, "adhoc-marker", 3*time.Second)
+
+	var rawLine bool
+	for _, line := range strings.Split(out.String(), "\n") {
+		rawLine = rawLine || line == "adhoc-marker"
+	}
+	if !rawLine {
+		t.Fatalf("ad-hoc output line was prefixed or reformatted:\n%q", out.String())
+	}
+	if got := out.String(); !strings.Contains(got, clearTerminal) {
+		t.Fatalf("ad-hoc run did not clear the screen:\n%q", got)
+	}
+
+	writeFile(t, filepath.Join(src, "a.txt"), "a")
+	waitForOutput(t, out, "# 1 file changed (e.g. ", 5*time.Second)
+	if got := out.String(); !strings.Contains(got, greenColor+"# 1 file changed (e.g. ") {
+		t.Fatalf("change line is not green:\n%q", got)
+	}
+
+	if got := stop(); got != 0 {
+		t.Errorf("exit code after SIGINT = %d, want 0", got)
+	}
+}
+
+// A second signal skips the grace period and exits 130.
+func TestAdHocSecondSignalExits130(t *testing.T) {
+	out := &safeBuffer{}
+	signals := make(chan os.Signal, 2)
+	exitCode := make(chan int, 1)
+	go func() {
+		exitCode <- runAdHoc(Args{
+			Watch: []string{t.TempDir()},
+			// A child that ignores SIGTERM keeps the first kill busy for the
+			// whole grace period, so the second signal always lands.
+			Cmd:   []string{"trap '' TERM; echo ready; while true; do sleep 1; done"},
+			Delay: 20 * time.Millisecond,
+			Grace: 500 * time.Millisecond,
+		}, out, signals)
+	}()
+
+	waitForOutput(t, out, "ready", 3*time.Second)
+	signals <- syscall.SIGINT
+	signals <- syscall.SIGINT
+
+	select {
+	case code := <-exitCode:
+		if code != 130 {
+			t.Errorf("exit code after two signals = %d, want 130", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ad-hoc run did not stop after two signals")
+	}
+}
+
+// A self-exiting command is reported once per generation.
 func TestRunAdHocReportsSelfExit(t *testing.T) {
-	out, dir, src := startAdHoc(t, "exit $(cat {code} 2>/dev/null || echo 0)")
+	out, _, dir, src := startAdHoc(t, "exit $(cat {code} 2>/dev/null || echo 0)")
 
 	waitForOutput(t, out, "exited (status 3)", 5*time.Second)
 
@@ -57,29 +141,19 @@ func TestRunAdHocReportsSelfExit(t *testing.T) {
 	}
 }
 
+// The kill rerun performs before a restart is not reported as an exit.
 func TestRunAdHocRestartKillIsNotReported(t *testing.T) {
-	out, dir, src := startAdHoc(t, "echo x >> {dir}/marker; sleep 2; exit $(cat {code} 2>/dev/null || echo 0)")
+	out, stop, dir, src := startAdHoc(t, "echo tick >> {dir}/marker; sleep 10")
+	marker := filepath.Join(dir, "marker")
 
-	waitForFile(t, filepath.Join(dir, "marker"), 2*time.Second)
-	time.Sleep(200 * time.Millisecond)
-
-	writeFile(t, filepath.Join(dir, "code"), "5")
+	waitForCount(t, marker, 1, 3*time.Second)
 	writeFile(t, filepath.Join(src, "change.txt"), "x")
+	waitForCount(t, marker, 2, 5*time.Second)
 
-	waitForOutput(t, out, "exited (status 5)", 5*time.Second)
-	if strings.Contains(out.String(), "status 3") {
-		t.Fatalf("a killed generation was reported as exited:\n%s", out.String())
+	if got := out.String(); strings.Contains(got, "exited (") {
+		t.Fatalf("a killed generation was reported as exited:\n%s", got)
 	}
-}
-
-func waitForFile(t *testing.T, path string, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(path); err == nil {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	if got := stop(); got != 0 {
+		t.Errorf("exit code after SIGINT = %d, want 0", got)
 	}
-	t.Fatalf("timed out waiting for %s", path)
 }

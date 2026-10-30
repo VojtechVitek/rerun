@@ -15,7 +15,7 @@ func newPlatformCmd(cmdline []string, grace time.Duration, opts ...Option) Comma
 }
 
 func newExecCmd(cmdline []string) *exec.Cmd {
-	cmd := exec.Command("/bin/sh", "-c", shellScript(cmdline))
+	cmd := exec.Command("/bin/sh", "-c", ShellScript(cmdline))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
