@@ -1,0 +1,62 @@
+# See documentation at https://goreleaser.com/customization/build.
+version: 2
+
+project_name: rerun
+
+builds:
+  - main: ./cmd/rerun
+    binary: rerun
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version=v{{.Version}}
+
+archives:
+  - name_template: "{{ .Binary }}.{{ .Os }}-{{ .Arch }}"
+    format: binary
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  use: github-native
+  sort: asc
+
+release:
+  replace_existing_artifacts: true
+  mode: replace
+  footer: |
+    ## Homebrew
+    ```
+    brew tap golang-cz/tap
+    brew install rerun
+    ```
+
+    ## Build from source
+    ```
+    go install -ldflags="-s -w -X main.version=v{{.Version}}" github.com/golang-cz/rerun/cmd/rerun@v{{.Version}}
+    ```
+
+    ## Download binaries
+    macOS: [amd64](https://github.com/golang-cz/rerun/releases/download/v{{.Version}}/rerun.darwin-amd64), [arm64](https://github.com/golang-cz/rerun/releases/download/v{{.Version}}/rerun.darwin-arm64) (Apple Silicon)
+    Linux: [amd64](https://github.com/golang-cz/rerun/releases/download/v{{.Version}}/rerun.linux-amd64), [arm64](https://github.com/golang-cz/rerun/releases/download/v{{.Version}}/rerun.linux-arm64)
+    Windows: [amd64](https://github.com/golang-cz/rerun/releases/download/v{{.Version}}/rerun.windows-amd64.exe), [arm64](https://github.com/golang-cz/rerun/releases/download/v{{.Version}}/rerun.windows-arm64.exe)
+
+brews:
+  - name: rerun
+    repository:
+      owner: golang-cz
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com
+    commit_msg_template: "Brew formula update for {{ .ProjectName }} version {{ .Tag }}"
+    homepage: "https://github.com/golang-cz/rerun"
+    description: "re-run a command on file system changes"
+    license: "MIT"
