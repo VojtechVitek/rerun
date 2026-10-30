@@ -44,13 +44,15 @@ func parseArgs(argv []string, stdin io.Reader, stdinIsTTY bool, stderr io.Writer
 	var args Args
 
 	// Bare words append to whichever list is active. Bare watch words are
-	// counted separately: a single one without any flag may name a target.
+	// counted separately: a single one may still name a target.
 	const (
 		listWatch = iota
 		listExcept
 	)
 	list := listWatch
-	flagsSeen := false
+	// Only a list keyword blocks the bare-word target rule. The run-tuning
+	// flags (-delay, -cooldown, -grace, -no-gitignore) combine with a target.
+	listFlagSeen := false
 
 parse:
 	for i := 0; i < len(argv); i++ {
@@ -76,21 +78,21 @@ parse:
 
 		case "--on":
 			list = listWatch
-			flagsSeen = true
+			listFlagSeen = true
 
 		case "--except":
 			list = listExcept
-			flagsSeen = true
+			listFlagSeen = true
 
 		case "-watch":
 			warnLegacy(&args, stderr)
 			list = listWatch
-			flagsSeen = true
+			listFlagSeen = true
 
 		case "-ignore":
 			warnLegacy(&args, stderr)
 			list = listExcept
-			flagsSeen = true
+			listFlagSeen = true
 
 		case "-delay":
 			d, err := durationFlag(argv, &i, "-delay")
@@ -98,7 +100,6 @@ parse:
 				return args, err
 			}
 			args.Delay = d
-			flagsSeen = true
 
 		case "-cooldown":
 			d, err := durationFlag(argv, &i, "-cooldown")
@@ -106,7 +107,6 @@ parse:
 				return args, err
 			}
 			args.Cooldown = d
-			flagsSeen = true
 
 		case "-grace":
 			d, err := durationFlag(argv, &i, "-grace")
@@ -114,11 +114,9 @@ parse:
 				return args, err
 			}
 			args.Grace = d
-			flagsSeen = true
 
 		case "-no-gitignore":
 			args.NoGitignore = true
-			flagsSeen = true
 
 		case "-h", "-help":
 			args.Help = true
@@ -148,9 +146,9 @@ parse:
 	}
 
 	if len(args.Cmd) == 0 {
-		// Bare words without any flag may name rerun.yml targets. main decides
+		// Bare words with no list flag may name rerun.yml targets. main decides
 		// once it knows whether a config file exists.
-		if len(args.Except) == 0 && !flagsSeen {
+		if len(args.Except) == 0 && !listFlagSeen {
 			args.Targets = args.Watch
 			args.Watch = nil
 			if len(args.Targets) == 1 {
@@ -173,7 +171,6 @@ parse:
 	return args, nil
 }
 
-// takeCommand captures the verbatim command tail of -- or -run.
 func takeCommand(rest []string) ([]string, error) {
 	if len(rest) == 0 || rest[0] == "--" {
 		return nil, errors.New("empty command")
@@ -198,6 +195,9 @@ func durationFlag(argv []string, i *int, name string) (time.Duration, error) {
 	d, err := time.ParseDuration(raw)
 	if err != nil {
 		return 0, fmt.Errorf("%s: invalid duration %q", name, raw)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("%s: duration must not be negative, got %q", name, raw)
 	}
 	return d, nil
 }

@@ -12,10 +12,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// ConfigFileName is the file rerun looks for.
 const ConfigFileName = "rerun.yml"
 
-// defaultDelay is the batch window between a file change and a restart.
 const defaultDelay = 200 * time.Millisecond
 
 // ErrConfigNotFound reports that no rerun.yml was found on the way up.
@@ -29,7 +27,6 @@ func (e *configNotFoundError) Error() string {
 
 func (e *configNotFoundError) Unwrap() error { return ErrConfigNotFound }
 
-// Target is one entry of rerun.yml, in file order.
 type Target struct {
 	Name     string
 	Desc     string
@@ -41,13 +38,11 @@ type Target struct {
 	Grace    time.Duration
 }
 
-// Config is a parsed rerun.yml.
 type Config struct {
 	Path    string
 	Targets []Target
 }
 
-// Names returns the target names in definition order.
 func (c *Config) Names() []string {
 	names := make([]string, 0, len(c.Targets))
 	for _, t := range c.Targets {
@@ -56,7 +51,6 @@ func (c *Config) Names() []string {
 	return names
 }
 
-// Find returns the named target.
 func (c *Config) Find(name string) (Target, bool) {
 	for _, t := range c.Targets {
 		if t.Name == name {
@@ -66,8 +60,6 @@ func (c *Config) Find(name string) (Target, bool) {
 	return Target{}, false
 }
 
-// LoadConfig walks startDir and its parents, stopping at the git root, and
-// parses the first rerun.yml it finds.
 func LoadConfig(startDir string) (*Config, error) {
 	dir, err := filepath.Abs(startDir)
 	if err != nil {
@@ -95,13 +87,11 @@ func LoadConfig(startDir string) (*Config, error) {
 	return nil, &configNotFoundError{dir: startDir}
 }
 
-// isGitRoot reports whether dir holds a .git directory or file.
 func isGitRoot(dir string) bool {
 	_, err := os.Stat(filepath.Join(dir, ".git"))
 	return err == nil
 }
 
-// ParseConfig reads and validates one rerun.yml file.
 func ParseConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -176,19 +166,16 @@ func parseTarget(path, name string, node *yaml.Node) (Target, error) {
 			}
 			target.Desc = s
 
-		case "on":
+		case "on", "except":
 			list, err := stringOrList(path, name, field, value)
 			if err != nil {
 				return Target{}, err
 			}
-			target.On = list
-
-		case "except":
-			list, err := stringOrList(path, name, field, value)
-			if err != nil {
-				return Target{}, err
+			if field == "on" {
+				target.On = list
+			} else {
+				target.Except = list
 			}
-			target.Except = list
 
 		case "cmd":
 			s, err := scalarField(path, name, field, value)
@@ -223,10 +210,18 @@ func parseTarget(path, name string, node *yaml.Node) (Target, error) {
 }
 
 func scalarField(path, name, field string, node *yaml.Node) (string, error) {
-	if node.Kind != yaml.ScalarNode {
-		return "", fmt.Errorf("%s: target %q: field %q: expected a string", path, name, field)
+	if node.Kind != yaml.ScalarNode || node.Tag != "!!str" {
+		return "", fmt.Errorf("%s: target %q: field %q: expected a string, got %s", path, name, field, yamlType(node))
 	}
 	return node.Value, nil
+}
+
+// yamlType names a node's type for error messages, e.g. "int" for !!int.
+func yamlType(node *yaml.Node) string {
+	if node.Tag == "" {
+		return "unknown"
+	}
+	return strings.TrimPrefix(node.Tag, "!!")
 }
 
 func stringOrList(path, name, field string, node *yaml.Node) ([]string, error) {
@@ -236,13 +231,16 @@ func stringOrList(path, name, field string, node *yaml.Node) ([]string, error) {
 		if node.Tag == "!!null" || strings.TrimSpace(node.Value) == "" {
 			return nil, nil
 		}
+		if node.Tag != "!!str" {
+			return nil, fmt.Errorf("%s: target %q: field %q: expected a string or a list of strings, got %s", path, name, field, yamlType(node))
+		}
 		return []string{node.Value}, nil
 
 	case yaml.SequenceNode:
 		list := make([]string, 0, len(node.Content))
 		for _, item := range node.Content {
-			if item.Kind != yaml.ScalarNode {
-				return nil, fmt.Errorf("%s: target %q: field %q: expected a list of strings", path, name, field)
+			if item.Kind != yaml.ScalarNode || item.Tag != "!!str" {
+				return nil, fmt.Errorf("%s: target %q: field %q: expected a list of strings, got %s", path, name, field, yamlType(item))
 			}
 			list = append(list, item.Value)
 		}
@@ -254,17 +252,19 @@ func stringOrList(path, name, field string, node *yaml.Node) ([]string, error) {
 }
 
 func durationField(path, name, field string, node *yaml.Node) (time.Duration, error) {
-	if node.Kind != yaml.ScalarNode {
-		return 0, fmt.Errorf("%s: target %q: field %q: expected a duration string", path, name, field)
+	if node.Kind != yaml.ScalarNode || node.Tag != "!!str" {
+		return 0, fmt.Errorf("%s: target %q: field %q: expected a duration string, got %s", path, name, field, yamlType(node))
 	}
 	d, err := time.ParseDuration(node.Value)
 	if err != nil {
 		return 0, fmt.Errorf("%s: target %q: field %q: invalid duration %q", path, name, field, node.Value)
 	}
+	if d < 0 {
+		return 0, fmt.Errorf("%s: target %q: field %q: duration must not be negative, got %q", path, name, field, node.Value)
+	}
 	return d, nil
 }
 
-// cleanYAMLError strips yaml.v3's package prefix from parse errors.
 func cleanYAMLError(err error) string {
 	return strings.TrimPrefix(err.Error(), "yaml: ")
 }

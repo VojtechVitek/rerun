@@ -94,6 +94,57 @@ func TestParseGrammar(t *testing.T) {
 			argv: []string{"-version"},
 			want: Args{Version: true},
 		},
+		{
+			name: "target with delay override",
+			argv: []string{"test", "-delay", "1s"},
+			want: Args{Target: "test", Delay: time.Second},
+		},
+		{
+			name: "target with all tuning overrides",
+			argv: []string{"test", "-grace", "2s", "-cooldown", "100ms"},
+			want: Args{Target: "test", Grace: 2 * time.Second, Cooldown: 100 * time.Millisecond},
+		},
+		{
+			name: "target with bool flag",
+			argv: []string{"test", "-no-gitignore"},
+			want: Args{Target: "test", NoGitignore: true},
+		},
+		{
+			name: "list switch back",
+			argv: []string{"--except", "x", "--on", "y", "--", "cmd"},
+			want: Args{Watch: []string{"y"}, Except: []string{"x"}, Cmd: []string{"cmd"}},
+		},
+		{
+			name: "flags after separator are verbatim",
+			argv: []string{"--", "-delay", "1s"},
+			want: Args{Cmd: []string{"-delay", "1s"}},
+		},
+		{
+			name: "legacy run after on",
+			argv: []string{"--on", "a", "-run", "c"},
+			want: Args{Watch: []string{"a"}, Cmd: []string{"c"}, Legacy: true},
+		},
+		{
+			name: "help wins over other args",
+			argv: []string{"a", "-delay", "1s", "-h", "q"},
+			want: Args{Help: true, Watch: []string{"a"}, Delay: time.Second},
+		},
+		{
+			name: "version wins over other args",
+			argv: []string{"--on", "x", "-version"},
+			want: Args{Version: true, Watch: []string{"x"}},
+		},
+		{
+			// An empty bare word is a watch word, not a target name.
+			name: "empty string is a watch word",
+			argv: []string{"", "--", "cmd"},
+			want: Args{Watch: []string{""}, Cmd: []string{"cmd"}},
+		},
+		{
+			name: "empty except list",
+			argv: []string{"--except", "--", "cmd"},
+			want: Args{Cmd: []string{"cmd"}},
+		},
 	}
 
 	for _, tt := range tests {
@@ -182,8 +233,12 @@ func TestParseErrors(t *testing.T) {
 		{"bare dash", []string{"-", "--", "cmd"}, "reserved for stdin"},
 		{"bare dash as except", []string{"--except", "-", "--", "cmd"}, "reserved for stdin"},
 		{"on without separator", []string{"--on", "a"}, noCmdHint},
-		{"target with flag", []string{"-delay", "1s", "test"}, noCmdHint},
+		{"target with list flag", []string{"test", "--on", "x"}, noCmdHint},
 		{"target with except", []string{"test", "--except", "x"}, noCmdHint},
+		{"target with legacy watch", []string{"test", "-watch", "x"}, noCmdHint},
+		{"negative delay", []string{"-delay", "-1s", "--", "cmd"}, "must not be negative"},
+		{"negative grace", []string{"-grace", "-2s", "--", "cmd"}, "must not be negative"},
+		{"negative target delay", []string{"test", "-cooldown", "-100ms"}, "must not be negative"},
 	}
 
 	for _, tt := range tests {

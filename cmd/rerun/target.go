@@ -159,7 +159,7 @@ func (r *targetRunner) run(ctx context.Context) error {
 		return err
 	}
 	if r.raw() {
-		r.printf("%s\n", clearTerminal) // comment out for debugging
+		r.printf("%s\n", clearTerminal)
 	}
 
 	changes := watcher.Watch(r.target.Delay)

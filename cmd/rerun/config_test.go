@@ -159,6 +159,56 @@ func TestParseConfigErrors(t *testing.T) {
 			content: "\n",
 			wantSub: []string{"no targets"},
 		},
+		{
+			name:    "integer on",
+			content: "api:\n  cmd: echo hi\n  on: 5\n",
+			wantSub: []string{`target "api"`, `"on"`, "got int"},
+		},
+		{
+			name:    "mapping on",
+			content: "api:\n  cmd: echo hi\n  on: {a: b}\n",
+			wantSub: []string{`target "api"`, `"on"`, "expected a string or a list of strings"},
+		},
+		{
+			name:    "null target",
+			content: "api:\n",
+			wantSub: []string{`target "api"`, "expected a mapping"},
+		},
+		{
+			name:    "whitespace cmd",
+			content: "api:\n  cmd: \"  \"\n",
+			wantSub: []string{`target "api"`, "cmd is required"},
+		},
+		{
+			name:    "non-string list item",
+			content: "api:\n  cmd: echo hi\n  on: [\"a\", 5]\n",
+			wantSub: []string{`target "api"`, `"on"`, "got int"},
+		},
+		{
+			name:    "non-string cmd",
+			content: "api:\n  cmd: 123\n",
+			wantSub: []string{`target "api"`, `field "cmd"`, "got int"},
+		},
+		{
+			name:    "non-string desc",
+			content: "api:\n  cmd: echo hi\n  desc: true\n",
+			wantSub: []string{`target "api"`, `field "desc"`, "got bool"},
+		},
+		{
+			name:    "integer delay",
+			content: "api:\n  cmd: echo hi\n  delay: 5\n",
+			wantSub: []string{`target "api"`, `field "delay"`, "got int"},
+		},
+		{
+			name:    "negative delay",
+			content: "api:\n  cmd: echo hi\n  delay: -1s\n",
+			wantSub: []string{`target "api"`, `field "delay"`, "must not be negative"},
+		},
+		{
+			name:    "negative grace",
+			content: "api:\n  cmd: echo hi\n  grace: -2s\n",
+			wantSub: []string{`target "api"`, `field "grace"`, "must not be negative"},
+		},
 	}
 
 	for _, tt := range tests {

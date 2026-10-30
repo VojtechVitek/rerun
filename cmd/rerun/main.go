@@ -11,7 +11,6 @@ import (
 
 const noGitignoreWarning = "rerun: warning: -no-gitignore is not implemented yet"
 
-// warnNoGitignore reports the flag once; the gitignore engine lands later.
 func warnNoGitignore(args Args, stderr io.Writer) {
 	if args.NoGitignore {
 		fmt.Fprintln(stderr, noGitignoreWarning)
@@ -38,7 +37,7 @@ Flags:
   -delay <dur>      batch window before restarting a command (default 200ms)
   -cooldown <dur>   minimum time between restarts (default 0s)
   -grace <dur>      time between SIGTERM and SIGKILL (default 5s)
-  -no-gitignore     do not respect .gitignore
+  -no-gitignore     (not yet implemented)
   -h, -help         show this help
   -version          show version
 
@@ -70,9 +69,7 @@ func main() {
 	os.Exit(runAdHoc(args, os.Stdout, nil))
 }
 
-// runConfigMode runs rerun.yml targets and returns the process exit code.
 func runConfigMode(args Args) int {
-	// Several bare words only name targets when the config lists them all.
 	if len(args.Targets) > 0 {
 		cfg, err := LoadConfig(".")
 		if err != nil || !allKnown(cfg, args.Targets) {
@@ -104,10 +101,6 @@ func runConfigMode(args Args) int {
 		return runTargets(targets, os.Stdout, nil)
 	}
 
-	if len(cfg.Targets) == 0 {
-		fmt.Fprintf(os.Stderr, "rerun: %s defines no targets\n", cfg.Path)
-		return 1
-	}
 	targets := append([]Target(nil), cfg.Targets...)
 	applyOverrides(targets, args)
 	return runTargets(targets, os.Stdout, nil)
@@ -131,7 +124,6 @@ func lookupAll(cfg *Config, names []string) []Target {
 	return targets
 }
 
-// applyOverrides lets CLI flags win over the target's own timeouts.
 func applyOverrides(targets []Target, args Args) {
 	for i := range targets {
 		if args.Delay > 0 {

@@ -5,50 +5,89 @@ Credit for this library goes to https://github.com/VojtechVitek/rerun
 
 Lightweight file-watcher that re-runs given command on FS changes. It has simple CLI and optional config file. By default, it uses 200ms delay, which gives enough time for tools like git to update all directories/files within repository before killing the old process (when you switch branches etc).
 
-#### In development. Only CLI MVP works right now.
-
 # Usage
-### `rerun [-watch DIR...] [-ignore DIR...] -run COMMAND [ARG...]`
+
+```
+rerun                                run all rerun.yml targets in parallel
+rerun <target> [target...]           run specific rerun.yml targets
+rerun -- <cmd>                       ad-hoc run: watch ./ and run <cmd>
+rerun a b --except c d -- <cmd>      bare words = watchlist, --except = ignorelist
+rerun --on a b --except c d -- <cmd> --on is an explicit watchlist keyword
+```
+
+Everything after `--` is the command, passed through verbatim.
 
 #### Examples:
 ```bash
-$ rerun -watch ./ -ignore vendor bin '*.md' -run go run ./cmd/rerun/main.go
+# Ad-hoc: watch ./ and re-run the command on any change
+$ rerun -- go test ./...
+
+# Explicit watch and ignore lists
+$ rerun '**/*.go' --except vendor -- go build ./...
+
+# Named targets from rerun.yml
+$ rerun
+$ rerun frontend api
+
+# Watchlist from stdin, when it is not a TTY
+$ find . -name '*.go' | rerun -- go test ./...
 ```
-```bash
-$ rerun -watch ./ -ignore vendor bin -run sh -c 'go build -i -o ./bin/rerun ./cmd/rerun/main.go && ./bin/rerun'
+
+#### Flags:
 ```
-```bash
-$ cd tests && rerun -watch '*_test.go' ../pkg -ignore vendor bin -run go test -run=Test
+-delay <dur>      batch window before restarting a command (default 200ms)
+-cooldown <dur>   minimum time between restarts (default 0s)
+-grace <dur>      time between SIGTERM and SIGKILL (default 5s)
+-no-gitignore     (not yet implemented)
+-h, -help         show this help
+-version          show version
 ```
+
+Flags override the matching fields of rerun.yml targets, e.g.
+`rerun api -delay 1s`.
+
+#### Deprecated: `-watch`, `-ignore` and `-run`
+They still work in this major version. Prefer `--on`, `--except` and `--`.
+
+# rerun.yml
+
+Place a `rerun.yml` anywhere in the repo. rerun walks up from the current
+directory, stopping at the git root, and takes the first one it finds.
+
+```yaml
+frontend:
+  desc: Vite dev server
+  on: web
+  except: [node_modules, dist]
+  cmd: pnpm run dev
+  delay: 250ms
+  cooldown: 2s
+  grace: 1s
+
+api:
+  on: [cmd, internal]
+  except: vendor
+  cmd: go run ./cmd/api
+```
+
+Each top-level key is one target. Fields:
+
+| Field | Meaning |
+|---|---|
+| `desc` | free-form description |
+| `on` | watch paths or globs, a string or a list |
+| `except` | paths or globs to ignore, a string or a list |
+| `cmd` | shell command to run, required |
+| `delay` | batch window before restarting (default 200ms) |
+| `cooldown` | minimum time between restarts (default 0s) |
+| `grace` | time between SIGTERM and SIGKILL (default 5s) |
 
 # Installation
 
 ```bash
-go get -u github.com/golang-cz/rerun/cmd/rerun
+go install github.com/golang-cz/rerun/cmd/rerun@latest
 ```
 *You might need to [download Go](https://golang.org/dl/) first.*
-
-
-```yaml
-api:
-  watch:
-    - cmd
-    - *.go
-  ignore:
-    - bin
-    - *_test.go
-  cmd:
-    - go run cmd/api/main.go -flags args
-
-test-login:
-  name: Test login
-  watch:
-    - tests/e2e
-    - services/auth
-    - data
-  run:
-    - go test -run=Login
-```
 
 Uses [fsnotify](https://github.com/fsnotify/fsnotify) behind the scenes, so technically it should work on most platforms including Linux, Mac OS and Windows.
 

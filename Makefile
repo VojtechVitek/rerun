@@ -18,4 +18,4 @@ test:
 
 .PHONY: run
 run:
-	go run ./cmd/rerun -watch ./ -ignore bin '*.md' -run 'echo hi && sleep 100000000'
+	go run ./cmd/rerun --except bin '*.md' -- echo rerun
