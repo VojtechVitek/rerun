@@ -34,10 +34,11 @@ type Command interface {
 	Kill() error
 	// KillForce force-kills the process group immediately, no grace period.
 	KillForce() error
-	// WaitExit blocks until the current generation has been reaped. It
-	// returns ctx.Err() if the context ends first.
+	// WaitExit blocks until the current generation has been reaped. A nil
+	// ctx blocks forever. It returns ctx.Err() if the context ends first.
 	WaitExit(ctx context.Context) error
-	// Exited reports whether the current generation has been reaped.
+	// Exited reports whether the current generation has been reaped. It
+	// returns false before Start.
 	Exited() bool
 	// ExitState returns the exit code and wait error of the current
 	// generation, blocking until it is reaped.
@@ -125,7 +126,7 @@ func (c *command) Kill() error {
 	}
 
 	// The signal can race an exit that already happened; that is not an error.
-	_ = signalGroup(proc, st, false)
+	signalGroup(proc, st, false)
 	if waitDone(st, c.grace) {
 		return nil
 	}
@@ -149,7 +150,7 @@ func (c *command) killForce(proc *exec.Cmd, st *exitState) error {
 		return nil
 	}
 
-	_ = signalGroup(proc, st, true)
+	signalGroup(proc, st, true)
 	if waitDone(st, killWaitCap) {
 		return nil
 	}
@@ -204,8 +205,6 @@ func (c *command) PID() string {
 	}
 	return fmt.Sprintf("PID %v", c.cmd.Process.Pid)
 }
-
-func (c *command) String() string { return c.PID() }
 
 func (c *command) current() (*exec.Cmd, *exitState) {
 	c.mu.Lock()

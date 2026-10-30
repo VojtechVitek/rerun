@@ -131,6 +131,131 @@ func TestWatchGlobDeliversChanges(t *testing.T) {
 	assertNoChange(t, changes, 300*time.Millisecond)
 }
 
+func TestMatchGlobPattern(t *testing.T) {
+	tests := []struct {
+		pattern string
+		path    string
+		want    bool
+	}{
+		{"logs/*.log", "logs/x.log", true},
+		{"logs/*.log", "/tmp/t/logs/x.log", true},
+		{"logs/*.log", "logs/sub/x.log", false},
+		{"logs/*.log", "x.log", false},
+		{"logs/*.log", "otherlogs/x.log", false},
+		{"dir/*.md", "dir/a.md", true},
+		{"dir/*.md", "otherdir/a.md", false},
+		{"dir/*.md", "a.md", false},
+		{"*.md", "a.md", true},
+		{"*.md", "dir/a.md", true},
+		{"logs/**/*.log", "logs/x.log", true},
+		{"logs/**/*.log", "logs/sub/x.log", true},
+	}
+	for _, tt := range tests {
+		if got := matchGlobPattern(tt.pattern, tt.path); got != tt.want {
+			t.Errorf("matchGlobPattern(%q, %q) = %v, want %v", tt.pattern, tt.path, got, tt.want)
+		}
+	}
+}
+
+// A directory-qualified glob ignores only that directory, not its subdirs.
+func TestIgnoreDirQualifiedGlob(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "logs", "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	top := filepath.Join(dir, "logs", "x.log")
+	deep := filepath.Join(sub, "x.log")
+	root := filepath.Join(dir, "x.log")
+	writeFiles(t, top, deep, root)
+
+	w, err := NewWatcher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Add(dir)
+	w.Ignore("logs/*.log")
+	changes := w.Watch(20 * time.Millisecond)
+	defer w.Close()
+
+	writeFiles(t, top)
+	assertNoChange(t, changes, 400*time.Millisecond)
+
+	change := writeUntilChange(t, changes, deep, 2*time.Second)
+	if _, ok := change.Files[deep]; !ok {
+		t.Fatalf("ChangeSet files = %v, want %s", change.Files, deep)
+	}
+
+	change = writeUntilChange(t, changes, root, 2*time.Second)
+	if _, ok := change.Files[root]; !ok {
+		t.Fatalf("ChangeSet files = %v, want %s", change.Files, root)
+	}
+}
+
+// After Close nothing more is delivered; the channel closes instead.
+func TestCloseDuringWatchDropsChanges(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "a.go")
+	writeFiles(t, file)
+
+	w, err := NewWatcher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Add(dir)
+	changes := w.Watch(20 * time.Millisecond)
+	writeUntilChange(t, changes, file, 2*time.Second)
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case change, ok := <-changes:
+			if !ok {
+				return
+			}
+			t.Fatalf("unexpected ChangeSet after Close: %v", change.Files)
+		case <-deadline:
+			t.Fatal("changes channel still open after Close")
+		}
+	}
+}
+
+func TestCloseIdempotent(t *testing.T) {
+	w, err := NewWatcher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}
+
+func TestWatchSecondCallReturnsNil(t *testing.T) {
+	dir := t.TempDir()
+	w, err := NewWatcher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Add(dir)
+	first := w.Watch(10 * time.Millisecond)
+	second := w.Watch(10 * time.Millisecond)
+	defer w.Close()
+
+	if first == nil {
+		t.Fatal("first Watch returned nil")
+	}
+	if second != nil {
+		t.Fatalf("second Watch = %v, want nil", second)
+	}
+}
+
 func TestWatchLiteralBracketDir(t *testing.T) {
 	dir := t.TempDir()
 	sub := filepath.Join(dir, "sub[1]")

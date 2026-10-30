@@ -32,11 +32,11 @@ func quoteWord(word string) string {
 
 // signalGroup: Windows has no signal a console child can handle gracefully, so
 // both the graceful and the forced pass are the same tree kill.
-func signalGroup(cmd *exec.Cmd, st *exitState, force bool) error {
+func signalGroup(cmd *exec.Cmd, st *exitState, force bool) {
 	if cmd.Process == nil || reaped(st) {
-		return nil
+		return
 	}
 	// https://stackoverflow.com/a/44551450
 	kill := exec.Command("TASKKILL", "/T", "/F", "/PID", strconv.Itoa(cmd.Process.Pid))
-	return kill.Run()
+	kill.Run()
 }
