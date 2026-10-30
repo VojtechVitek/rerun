@@ -1,0 +1,92 @@
+---
+name: rerun
+description: Re-run a command on file system changes — CLI usage and rerun.yml target authoring
+---
+
+# rerun
+
+`rerun` watches files and restarts your command whenever they change.
+One invocation keeps running until you press Ctrl-C.
+
+## Running
+
+### Ad-hoc: run one command
+
+```bash
+rerun -- go test ./...
+```
+
+Watches the current directory (`.gitignore` respected) and restarts
+`go test ./...` on every change.
+
+With explicit lists:
+
+```bash
+rerun --on ./pkg ./cmd --except vendor '*.md' -- go test ./...
+```
+
+- Bare words before `--except` are the watch list (`--on` is an optional synonym).
+- `--except` starts the ignore list; both are shell word-split, so globs need quoting.
+- Watch/ignore patterns use `.gitignore`-style syntax: `vendor/`, `*.md`, `**/*.go`.
+
+Pipe a file list instead (entr-style):
+
+```bash
+find . -name '*.go' | rerun -- go test ./...
+```
+
+### Targets: rerun.yml
+
+With a `rerun.yml` in the repo (looked up from the current directory up to the
+git root):
+
+```bash
+rerun                  # run ALL targets in parallel
+rerun frontend api     # run a subset
+rerun test             # run one target (flags allowed: rerun test -delay 500ms)
+```
+
+Each target gets its own watcher and command; output is prefixed `[name]`.
+A target that exits by itself stays down until its next matching file change.
+
+## Building rerun.yml
+
+Flat top-level map, one entry per target (Makefile-like). `cmd` is required;
+everything else is optional. Durations are Go-style strings (`200ms`, `5s`).
+
+```yaml
+frontend:
+  desc: Vite dev server          # shown in output listings
+  on: web                       # string or list; gitignore-style globs
+  except: [node_modules, dist]  # adds to .gitignore, which always applies
+  cmd: pnpm run dev              # run through sh -c; quotes, &&, pipes work
+  delay: 200ms                  # batch file events before restarting
+  cooldown: 2s                  # min time between restarts (event storms)
+  grace: 5s                     # SIGTERM → wait → SIGKILL
+
+api:
+  on: [cmd, internal]
+  cmd: go run ./cmd/api --addr :8080
+
+test:
+  on: ['**/*.go']
+  cmd: go test ./...
+  delay: 500ms
+```
+
+Defaults: `on: ./`, `delay: 200ms`, `cooldown: 0s`, `grace: 5s`.
+Unknown fields, duplicate fields, and non-string values are errors.
+
+## Flags
+
+- `-delay`, `-cooldown`, `-grace` — override per run (CLI wins over rerun.yml)
+- `-no-gitignore` — (not yet implemented)
+- `-h`, `-version`
+
+## Shutdown
+
+Ctrl-C stops all commands gracefully (SIGTERM → grace → SIGKILL, exit 0).
+A second Ctrl-C force-kills immediately (exit 130).
+
+Legacy syntax (`-watch a -ignore b -run cmd`) still works this major version,
+but prints a deprecation warning.
