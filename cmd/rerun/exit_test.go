@@ -3,26 +3,42 @@ package main
 import (
 	"errors"
 	"os/exec"
+	"runtime"
 	"testing"
 )
 
-func TestDescribeExitStatus(t *testing.T) {
+func TestDescribeExit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh is not available on Windows")
+	}
+
 	cases := []struct {
-		name string
-		code int
-		err  error
-		want string
+		script string
+		want   string
 	}{
-		{"clean exit", 0, nil, "status 0"},
-		{"non-zero exit", 3, &exec.ExitError{}, "status 3"},
-		{"unknown signal", -1, errors.New("boom"), "signal"},
+		{"exit 0", "status 0"},
+		{"exit 3", "status 3"},
+		{"kill -TERM $$", "signal: terminated"},
 	}
 
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := describeExit(tc.code, tc.err); got != tc.want {
-				t.Errorf("describeExit(%d, %v) = %q, want %q", tc.code, tc.err, got, tc.want)
+		t.Run(tc.script, func(t *testing.T) {
+			cmd := exec.Command("sh", "-c", tc.script)
+			err := cmd.Run()
+
+			code := -1
+			if cmd.ProcessState != nil {
+				code = cmd.ProcessState.ExitCode()
+			}
+			if got := describeExit(code, err); got != tc.want {
+				t.Errorf("describeExit(%q) = %q, want %q", tc.script, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestDescribeExitUnknownSignal(t *testing.T) {
+	if got := describeExit(-1, errors.New("boom")); got != "signal" {
+		t.Errorf("describeExit(-1, err) = %q, want %q", got, "signal")
 	}
 }

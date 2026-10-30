@@ -4,28 +4,17 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
-
-	"github.com/golang-cz/rerun"
 )
 
-// exitDescription renders how the current generation ended, e.g. "status 3"
-// or "signal SIGKILL".
-func exitDescription(cmd rerun.Command) string {
-	code, err := cmd.ExitState()
-	return describeExit(code, err)
-}
-
-// describeExit turns a reaped wait result into a short human string. code is
-// negative when the process did not exit on its own.
+// describeExit renders a reaped generation's end, e.g. "status 3" or
+// "signal: terminated". code is negative when the child did not exit on its own.
 func describeExit(code int, err error) string {
+	if code >= 0 {
+		return fmt.Sprintf("status %d", code)
+	}
 	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		if name := signalName(exitErr.ProcessState); name != "" {
-			return "signal " + name
-		}
+	if errors.As(err, &exitErr) && exitErr.ProcessState != nil {
+		return exitErr.ProcessState.String()
 	}
-	if code < 0 {
-		return "signal"
-	}
-	return fmt.Sprintf("status %d", code)
+	return "signal"
 }

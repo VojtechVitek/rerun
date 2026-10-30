@@ -163,7 +163,7 @@ func TestRunTargetsReportsSignalExit(t *testing.T) {
   cmd: kill -TERM $$
 `)
 
-	waitForOutput(t, out, "[t] exited (signal SIGTERM)", 3*time.Second)
+	waitForOutput(t, out, "[t] exited (signal: terminated)", 3*time.Second)
 
 	if got := stop(); got != 0 {
 		t.Errorf("exit code = %d, want 0", got)

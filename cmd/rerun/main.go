@@ -7,8 +7,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -196,22 +194,21 @@ func runAdHoc(args Args, out io.Writer) {
 	}
 	lastStart = time.Now()
 
-	run := &adHocRun{cmd: cmd, out: out, lines: &sync.Mutex{}}
-	run.watchGeneration()
+	printf := func(format string, a ...any) { fmt.Fprintf(out, format, a...) }
+
+	exited := watchAdHocExit(cmd)
 
 	go func() {
 		<-sig
 
 		go func() {
 			<-sig // Second signal: skip the grace period.
-			run.markKilled()
 			_ = cmd.KillForce()
 			os.Exit(130)
 		}()
 
-		run.markKilled()
 		if err := cmd.Kill(); err != nil {
-			run.printf("%v\n", err)
+			printf("%v\n", err)
 		}
 
 		done := make(chan struct{})
@@ -221,7 +218,7 @@ func runAdHoc(args Args, out io.Writer) {
 				case <-done:
 					return
 				case <-time.After(1 * time.Second):
-					run.printf("\033cWaiting on %v\n", cmd.PID())
+					printf("\033cWaiting on %v\n", cmd.PID())
 				}
 			}
 		}()
@@ -231,99 +228,63 @@ func runAdHoc(args Args, out io.Writer) {
 		os.Exit(0)
 	}()
 
-	run.printf("%s\n", clearTerminal) // comment out for debugging
-	for changeSet := range watcher.Watch(delay) {
-		run.killCurrent()
-		if changeSet.Error != nil {
-			run.printf("%v\n", changeSet.Error)
-		}
+	printf("%s\n", clearTerminal) // comment out for debugging
+	changes := watcher.Watch(delay)
+	for {
+		select {
+		case changeSet, ok := <-changes:
+			if !ok {
+				return
+			}
 
-		waitCooldown(cooldown, lastStart)
+			// A command that exited by itself was already reaped.
+			if !cmd.Exited() {
+				if err := cmd.Kill(); err != nil {
+					printf("%v\n", err)
+				}
+				_ = cmd.WaitExit(context.Background())
+			}
+			exited = nil // a generation rerun killed is never reported
 
-		plural := ""
-		if len(changeSet.Files) > 1 {
-			plural = "s"
-		}
-		run.printf("%s%s# %v file%v changed (e.g. %v)%s\n", clearTerminal, greenColor, len(changeSet.Files), plural, changeSet.FirstFile, resetColor)
+			if changeSet.Error != nil {
+				printf("%v\n", changeSet.Error)
+			}
 
-		if err := cmd.Start(); err != nil {
-			run.printf("%v\n", err)
+			waitCooldown(cooldown, lastStart)
+
+			plural := ""
+			if len(changeSet.Files) > 1 {
+				plural = "s"
+			}
+			printf("%s%s# %v file%v changed (e.g. %v)%s\n", clearTerminal, greenColor, len(changeSet.Files), plural, changeSet.FirstFile, resetColor)
+
+			if err := cmd.Start(); err != nil {
+				printf("%v\n", err)
+			}
+			lastStart = time.Now()
+			exited = watchAdHocExit(cmd)
+
+		case res := <-exited:
+			printf("rerun: exited (%s) — waiting for changes\n", describeExit(res.code, res.err))
+			exited = nil // report each generation at most once
 		}
-		lastStart = time.Now()
-		run.watchGeneration()
 	}
-
-	select {}
 }
 
-// adHocRun owns the ad-hoc child across restarts and reports the generation
-// exits rerun did not cause.
-type adHocRun struct {
-	cmd   rerun.Command
-	out   io.Writer
-	lines *sync.Mutex
-
-	mu sync.Mutex
-	// killed marks the generation rerun is about to restart or shut down.
-	killed *atomic.Int32
-	// done closes once that generation's watcher has finished.
-	done <-chan struct{}
+// exitResult is one generation's reap snapshot, taken when the child exits.
+type exitResult struct {
+	code int
+	err  error
 }
 
-func (r *adHocRun) printf(format string, args ...any) {
-	r.lines.Lock()
-	defer r.lines.Unlock()
-	fmt.Fprintf(r.out, format, args...)
-}
-
-// watchGeneration prints the current generation's exit exactly once, unless
-// rerun killed it to restart or to shut down.
-func (r *adHocRun) watchGeneration() {
-	killed := new(atomic.Int32)
-	done := make(chan struct{})
-
-	r.mu.Lock()
-	r.killed, r.done = killed, done
-	r.mu.Unlock()
-
+// watchAdHocExit delivers the generation's exit as soon as it is reaped.
+func watchAdHocExit(cmd rerun.Command) <-chan exitResult {
+	exited := make(chan exitResult, 1)
 	go func() {
-		defer close(done)
-		_ = r.cmd.WaitExit(context.Background())
-		if killed.Load() != 0 {
-			return
-		}
-		r.printf("rerun: exited (%s) — waiting for changes\n", exitDescription(r.cmd))
+		code, err := cmd.ExitState()
+		exited <- exitResult{code: code, err: err}
 	}()
-}
-
-// killCurrent stops the current generation and waits for its watcher, so a
-// restart kill is never reported as a self-exit.
-func (r *adHocRun) killCurrent() {
-	r.markKilled()
-
-	// A command that exited by itself was already reaped by its reaper.
-	if !r.cmd.Exited() {
-		if err := r.cmd.Kill(); err != nil {
-			r.printf("%v\n", err)
-		}
-		_ = r.cmd.WaitExit(context.Background())
-	}
-
-	r.mu.Lock()
-	done := r.done
-	r.mu.Unlock()
-	if done != nil {
-		<-done
-	}
-}
-
-func (r *adHocRun) markKilled() {
-	r.mu.Lock()
-	killed := r.killed
-	r.mu.Unlock()
-	if killed != nil {
-		killed.Store(1)
-	}
+	return exited
 }
 
 // waitCooldown sleeps out the remainder of the cooldown window since the last
