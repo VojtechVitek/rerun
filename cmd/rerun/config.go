@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,9 +34,15 @@ type Target struct {
 	On       []string
 	Except   []string
 	Cmd      string
+	URL      string
 	Delay    time.Duration
 	Cooldown time.Duration
 	Grace    time.Duration
+	// Selected is false for `selected: false` targets: they exist in the
+	// list but start off until they are started by hand.
+	Selected bool
+	// Open asks rerun to open URL in the browser on the first start.
+	Open bool
 }
 
 type Config struct {
@@ -148,7 +155,7 @@ func parseTarget(path, name string, node *yaml.Node) (Target, error) {
 		return Target{}, fmt.Errorf("%s: target %q: expected a mapping of fields", path, name)
 	}
 
-	target := Target{Name: name, Delay: defaultDelay, Grace: rerun.DefaultGrace}
+	target := Target{Name: name, Delay: defaultDelay, Grace: rerun.DefaultGrace, Selected: true}
 	seen := make(map[string]bool)
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		field := node.Content[i].Value
@@ -177,12 +184,27 @@ func parseTarget(path, name string, node *yaml.Node) (Target, error) {
 				target.Except = list
 			}
 
-		case "cmd":
+		case "cmd", "url":
 			s, err := scalarField(path, name, field, value)
 			if err != nil {
 				return Target{}, err
 			}
-			target.Cmd = s
+			if field == "cmd" {
+				target.Cmd = s
+			} else {
+				target.URL = s
+			}
+
+		case "open", "selected":
+			b, err := boolField(path, name, field, value)
+			if err != nil {
+				return Target{}, err
+			}
+			if field == "open" {
+				target.Open = b
+			} else {
+				target.Selected = b
+			}
 
 		case "delay", "cooldown", "grace":
 			d, err := durationField(path, name, field, value)
@@ -214,6 +236,17 @@ func scalarField(path, name, field string, node *yaml.Node) (string, error) {
 		return "", fmt.Errorf("%s: target %q: field %q: expected a string, got %s", path, name, field, yamlType(node))
 	}
 	return node.Value, nil
+}
+
+func boolField(path, name, field string, node *yaml.Node) (bool, error) {
+	if node.Kind != yaml.ScalarNode || node.Tag != "!!bool" {
+		return false, fmt.Errorf("%s: target %q: field %q: expected a boolean, got %s", path, name, field, yamlType(node))
+	}
+	b, err := strconv.ParseBool(node.Value)
+	if err != nil {
+		return false, fmt.Errorf("%s: target %q: field %q: expected a boolean, got %q", path, name, field, node.Value)
+	}
+	return b, nil
 }
 
 // yamlType names a node's type for error messages, e.g. "int" for !!int.

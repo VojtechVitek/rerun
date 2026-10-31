@@ -49,6 +49,10 @@ rerun test             # run one target (flags allowed: rerun test -delay 500ms)
 Each target gets its own watcher and command; output is prefixed `[name]`.
 A target that exits by itself stays down until its next matching file change.
 
+On a terminal, target mode opens the TUI: a row per target on the left, the
+merged stream on the right. Piped or non-TTY output stays plain prefixed text.
+Press `?` inside it for the full key list.
+
 ## Building rerun.yml
 
 Flat top-level map, one entry per target (Makefile-like). `cmd` is required;
@@ -60,6 +64,8 @@ frontend:
   on: web                       # string or list; gitignore-style globs
   except: [node_modules, dist]  # adds to .gitignore, which always applies
   cmd: pnpm run dev              # run through sh -c; quotes, &&, pipes work
+  url: http://localhost:5173     # o opens it; the row links to it
+  open: true                     # open the url once at startup
   delay: 200ms                  # batch file events before restarting
   cooldown: 2s                  # min time between restarts (event storms)
   grace: 5s                     # SIGTERM → wait → SIGKILL
@@ -67,6 +73,7 @@ frontend:
 api:
   on: [cmd, internal]
   cmd: go run ./cmd/api --addr :8080
+  selected: false               # listed in the TUI, starts off (space starts it)
 
 test:
   on: ['**/*.go']
@@ -74,7 +81,8 @@ test:
   delay: 500ms
 ```
 
-Defaults: `on: ./`, `delay: 200ms`, `cooldown: 0s`, `grace: 5s`.
+Defaults: `on: ./`, `delay: 200ms`, `cooldown: 0s`, `grace: 5s`,
+`selected: true`, `open: false`.
 Unknown fields, duplicate fields, and non-string values are errors.
 
 ## Flags

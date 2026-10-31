@@ -1,0 +1,728 @@
+package main
+
+import (
+	"context"
+	"reflect"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/golang-cz/rerun"
+)
+
+func target(name string) Target {
+	return Target{Name: name, Cmd: "sleep 1", Delay: defaultDelay, Grace: rerun.DefaultGrace, Selected: true}
+}
+
+func newTestModel(t *testing.T, targets ...Target) *tuiModel {
+	t.Helper()
+	if len(targets) == 0 {
+		targets = []Target{target("web"), target("api"), target("worker")}
+	}
+	m := newTUI(targets)
+	m.width, m.height = 100, 20
+	return m
+}
+
+func keyMsg(s string) tea.KeyMsg {
+	switch s {
+	case " ":
+		return tea.KeyMsg{Type: tea.KeySpace}
+	case "up":
+		return tea.KeyMsg{Type: tea.KeyUp}
+	case "down":
+		return tea.KeyMsg{Type: tea.KeyDown}
+	case "enter":
+		return tea.KeyMsg{Type: tea.KeyEnter}
+	case "esc":
+		return tea.KeyMsg{Type: tea.KeyEsc}
+	default:
+		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+	}
+}
+
+func press(m *tuiModel, keys ...string) {
+	for _, k := range keys {
+		m.Update(keyMsg(k))
+	}
+}
+
+func mouse(x, y int, shift bool) tea.MouseMsg {
+	return tea.MouseMsg{X: x, Y: y, Shift: shift, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}
+}
+
+// buttons is the stream button of every row, in row order.
+func buttons(m *tuiModel) []string {
+	out := make([]string, len(m.targets))
+	for i := range m.targets {
+		out[i] = m.button(i)
+	}
+	return out
+}
+
+func segText(segs []seg) string {
+	var b strings.Builder
+	for _, s := range segs {
+		b.WriteString(s.text)
+	}
+	return b.String()
+}
+
+func TestUptimeFormat(t *testing.T) {
+	tests := []struct {
+		in   time.Duration
+		want string
+	}{
+		{0, "0s"},
+		{3 * time.Second, "3s"},
+		{9 * time.Second, "9s"},
+		{48 * time.Second, "0m48s"},
+		{75 * time.Second, "1m15s"},
+		{30 * time.Minute, "30m00s"},
+		{90 * time.Minute, "1h30m"},
+		{150 * time.Minute, "2h30m"},
+		{23 * time.Hour, "23h00m"},
+		{99 * time.Hour, "4d03h"},
+		{-time.Second, "0s"},
+	}
+	for _, tt := range tests {
+		if got := uptime(tt.in); got != tt.want {
+			t.Errorf("uptime(%v) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestStreamButtonMuteToggle(t *testing.T) {
+	m := newTestModel(t)
+	if got := buttons(m); !reflect.DeepEqual(got, []string{" ", " ", " "}) {
+		t.Fatalf("buttons = %q, want blank", got)
+	}
+
+	m.cursor = 1
+	press(m, "m")
+	if got := buttons(m); !reflect.DeepEqual(got, []string{"M", " ", " "}) {
+		t.Fatalf("after m: buttons = %q, want M on row 1", got)
+	}
+	if !m.targets[0].muted {
+		t.Error("row 1 is not muted")
+	}
+
+	press(m, "m")
+	if got := buttons(m); !reflect.DeepEqual(got, []string{" ", " ", " "}) {
+		t.Fatalf("after second m: buttons = %q, want blank", got)
+	}
+	if m.targets[0].muted {
+		t.Error("row 1 is still muted")
+	}
+}
+
+func TestStreamButtonSoloHidesOtherMuteStates(t *testing.T) {
+	m := newTestModel(t)
+	m.toggleMute(0)
+
+	m.cursor = 2
+	press(m, "s")
+	if got := buttons(m); !reflect.DeepEqual(got, []string{" ", "S", " "}) {
+		t.Fatalf("solo on row 2: buttons = %q, want other rows blank", got)
+	}
+	if !m.targets[0].muted {
+		t.Error("solo cleared a mute state it must keep inside")
+	}
+
+	// Clearing solo restores the hidden Ms.
+	press(m, "s")
+	if got := buttons(m); !reflect.DeepEqual(got, []string{"M", " ", " "}) {
+		t.Fatalf("after clearing solo: buttons = %q, want row 1 M again", got)
+	}
+}
+
+func TestStreamButtonSoloUnmutesAndIsExclusive(t *testing.T) {
+	m := newTestModel(t)
+	m.toggleMute(0)
+
+	m.cursor = 1
+	press(m, "s")
+	if got := buttons(m); !reflect.DeepEqual(got, []string{"S", " ", " "}) {
+		t.Fatalf("buttons = %q, want S on row 1", got)
+	}
+	if m.targets[0].muted {
+		t.Error("s must unmute the row it solos")
+	}
+
+	m.cursor = 2
+	press(m, "s")
+	if got := buttons(m); !reflect.DeepEqual(got, []string{" ", "S", " "}) {
+		t.Fatalf("buttons = %q, want only one S", got)
+	}
+}
+
+func TestStreamButtonMuteOnSoloRowIsNoOp(t *testing.T) {
+	m := newTestModel(t)
+	m.toggleSolo(1)
+
+	m.cursor = 2
+	press(m, "m")
+	if got := buttons(m); !reflect.DeepEqual(got, []string{" ", "S", " "}) {
+		t.Fatalf("buttons = %q, m on the solo row must be a no-op", got)
+	}
+	if m.targets[1].muted {
+		t.Error("m muted the solo row")
+	}
+}
+
+func TestRollupCounts(t *testing.T) {
+	m := newTestModel(t, target("a"), target("b"), target("c"), target("d"), target("e"))
+	m.targets[0].state, m.targets[1].state, m.targets[2].state = stateRunning, stateRunning, stateRunning
+	m.targets[3].state, m.targets[3].exitCode = stateExited, 0
+	m.targets[4].state, m.targets[4].exitCode = stateExited, 1
+
+	if got, want := segText(m.rollupSegs()), "3● 1✓ 1✗"; got != want {
+		t.Fatalf("rollup = %q, want %q", got, want)
+	}
+
+	// Stopped and off rows are not counted.
+	m.targets[0].state = stateStopped
+	m.targets[1].state = stateOff
+	if got, want := segText(m.rollupSegs()), "1● 1✓ 1✗"; got != want {
+		t.Fatalf("rollup = %q, want %q", got, want)
+	}
+}
+
+func TestUnseenBadgeOnMutedOutput(t *testing.T) {
+	m := newTestModel(t, target("web"), target("api"))
+	m.toggleMute(1)
+
+	m.applyEvent(event{kind: evOutput, target: "api", line: "hidden"})
+	if !m.targets[1].unseen {
+		t.Fatal("muted unfocused output did not raise the badge")
+	}
+	if !strings.Contains(m.View(), "✱") {
+		t.Error("the ✱ badge is not on screen")
+	}
+
+	// Focusing the row clears it.
+	m.setFocus(2)
+	if m.targets[1].unseen {
+		t.Error("focus did not clear the badge")
+	}
+}
+
+func TestNoBadgeForVisibleOutput(t *testing.T) {
+	m := newTestModel(t, target("web"), target("api"))
+	m.applyEvent(event{kind: evOutput, target: "api", line: "visible"})
+	if m.targets[1].unseen {
+		t.Fatal("output already in the ALL stream must not raise the badge")
+	}
+
+	// The focused target's own output is visible too.
+	m.setFocus(2)
+	m.applyEvent(event{kind: evOutput, target: "api", line: "focused"})
+	if m.targets[1].unseen {
+		t.Fatal("output of the focused pane must not raise the badge")
+	}
+}
+
+func TestUnseenExitBadgeClearsOnUnmute(t *testing.T) {
+	m := newTestModel(t, target("web"), target("api"))
+	m.applyEvent(event{kind: evExited, target: "web", status: "status 1", code: 1, err: nil})
+	if !m.targets[0].unseen {
+		t.Fatal("an unfocused exit did not raise the badge")
+	}
+
+	m.toggleMute(0)
+	if !m.targets[0].unseen {
+		t.Error("muting must not clear the badge")
+	}
+	m.toggleMute(0)
+	if m.targets[0].unseen {
+		t.Error("unmuting did not clear the badge")
+	}
+}
+
+func TestMergedStreamDropsMutedAndNonSolo(t *testing.T) {
+	m := newTestModel(t, target("web"), target("api"), target("worker"))
+	for _, ev := range []event{
+		{kind: evOutput, target: "web", line: "w1"},
+		{kind: evOutput, target: "api", line: "a1"},
+		{kind: evOutput, target: "worker", line: "k1"},
+	} {
+		m.applyEvent(ev)
+	}
+
+	if got, want := m.paneLines(), []string{"[web] w1", "[api] a1", "[worker] k1"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("merged = %q, want %q", got, want)
+	}
+
+	m.toggleMute(1)
+	if got, want := m.paneLines(), []string{"[web] w1", "[worker] k1"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("merged after mute = %q, want %q", got, want)
+	}
+
+	m.toggleSolo(2)
+	if got, want := m.paneLines(), []string{"[worker] k1"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("merged while solo = %q, want %q", got, want)
+	}
+
+	// Clearing solo brings the muted row back as muted, not streaming.
+	m.toggleSolo(2)
+	if got, want := m.paneLines(), []string{"[web] w1", "[worker] k1"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("merged after solo cleared = %q, want %q", got, want)
+	}
+	if !m.targets[1].muted {
+		t.Error("solo dropped the muted state it had to keep inside")
+	}
+}
+
+func TestMergedStreamKeepsArrivalOrder(t *testing.T) {
+	m := newTestModel(t, target("web"), target("api"))
+	for _, ev := range []event{
+		{kind: evOutput, target: "web", line: "w1"},
+		{kind: evOutput, target: "api", line: "a1"},
+		{kind: evOutput, target: "web", line: "w2"},
+	} {
+		m.applyEvent(ev)
+	}
+
+	want := []string{"[web] w1", "[api] a1", "[web] w2"}
+	if got := m.paneLines(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("merged = %q, want %q", got, want)
+	}
+
+	// A mute rebuild must not reorder the stream by target.
+	m.toggleMute(1)
+	m.toggleMute(1)
+	if got := m.paneLines(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("merged after rebuild = %q, want %q", got, want)
+	}
+}
+
+func TestScrollDownResumesFollowingAtTheBottom(t *testing.T) {
+	m := newTestModel(t, target("web"))
+	for i := 0; i < 60; i++ {
+		m.applyEvent(event{kind: evOutput, target: "web", line: "line"})
+	}
+	m.View()
+
+	m.scrollUp(5)
+	if m.follow {
+		t.Fatal("scrolling up did not freeze the tail")
+	}
+	m.scrollDown(5)
+	if !m.follow || m.pending != 0 {
+		t.Fatalf("scrolling back to the bottom did not resume: follow=%v pending=%d", m.follow, m.pending)
+	}
+}
+
+func TestFocusedPaneIsUnprefixed(t *testing.T) {
+	m := newTestModel(t, target("web"), target("api"))
+	m.applyEvent(event{kind: evOutput, target: "web", line: "hello"})
+
+	m.setFocus(1)
+	if got, want := m.paneLines(), []string{"hello"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("focused pane = %q, want %q", got, want)
+	}
+
+	m.setFocus(0)
+	if got, want := m.paneLines(), []string{"[web] hello"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("ALL pane = %q, want %q", got, want)
+	}
+}
+
+// queuedCtrl pops the control message a runner's loop would have taken.
+func queuedCtrl(t *testing.T, r *targetRunner) ctrlKind {
+	t.Helper()
+	select {
+	case c := <-r.ctrlCh:
+		return c.kind
+	default:
+		t.Fatal("the runner was not asked to change state")
+		return 0
+	}
+}
+
+func TestSpaceStopsAndStartsTheHighlightedTarget(t *testing.T) {
+	m := newTestModel(t, target("web"), target("api"))
+	m.cursor = 1
+
+	press(m, " ")
+	if m.targets[0].state != stateStopped {
+		t.Fatalf("state = %v, want stopped", m.targets[0].state)
+	}
+	if got := queuedCtrl(t, m.targets[0].runner); got != ctrlStop {
+		t.Fatalf("control = %v, want ctrlStop", got)
+	}
+
+	press(m, " ")
+	if m.targets[0].state != stateRunning {
+		t.Fatalf("state = %v, want running", m.targets[0].state)
+	}
+	if got := queuedCtrl(t, m.targets[0].runner); got != ctrlStart {
+		t.Fatalf("control = %v, want ctrlStart", got)
+	}
+}
+
+func TestSpaceOnAllRowStopsAndStartsEverything(t *testing.T) {
+	m := newTestModel(t, target("web"), target("api"))
+	m.cursor = 0
+
+	press(m, " ")
+	for i, row := range m.targets {
+		if row.state != stateStopped {
+			t.Errorf("target %d state = %v, want stopped", i, row.state)
+		}
+	}
+
+	press(m, " ")
+	for i, row := range m.targets {
+		if row.state != stateRunning {
+			t.Errorf("target %d state = %v, want running", i, row.state)
+		}
+	}
+}
+
+func TestUnselectedTargetStartsOff(t *testing.T) {
+	off := target("job")
+	off.Selected = false
+	m := newTestModel(t, off, target("web"))
+	m.now = m.targets[0].lastStart.Add(3 * time.Second)
+
+	if m.targets[0].state != stateOff {
+		t.Fatalf("state = %v, want off", m.targets[0].state)
+	}
+	if got := m.status(m.targets[0]); got != "off" {
+		t.Fatalf("status = %q, want off", got)
+	}
+	if got := m.targets[0].glyph(); got != "·" {
+		t.Fatalf("glyph = %q, want ·", got)
+	}
+
+	// Space starts it by hand.
+	m.cursor = 1
+	press(m, " ")
+	if m.targets[0].state != stateRunning {
+		t.Fatalf("state after space = %v, want running", m.targets[0].state)
+	}
+}
+
+func TestRebootOnAllRowTouchesSelectedTargetsOnly(t *testing.T) {
+	off := target("job")
+	off.Selected = false
+	m := newTestModel(t, off, target("web"))
+	m.cursor = 0
+
+	press(m, "r")
+	if m.targets[0].state != stateOff {
+		t.Errorf("unselected target state = %v, want off", m.targets[0].state)
+	}
+	if m.targets[1].state != stateRunning {
+		t.Errorf("selected target state = %v, want running", m.targets[1].state)
+	}
+}
+
+func TestHelpOverlayToggles(t *testing.T) {
+	m := newTestModel(t)
+	press(m, "?")
+	if !m.help {
+		t.Fatal("? did not open the help overlay")
+	}
+	view := m.View()
+	for _, want := range []string{"mute", "solo", "shift-drag", "open the target's url"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("help overlay is missing %q", want)
+		}
+	}
+	press(m, "?")
+	if m.help {
+		t.Fatal("? did not close the help overlay")
+	}
+}
+
+func TestQuitKeysReturnQuit(t *testing.T) {
+	for _, key := range []string{"q", "ctrl+c"} {
+		m := newTestModel(t)
+		if _, cmd := m.Update(keyMsg(key)); cmd == nil {
+			t.Errorf("%s did not return a quit command", key)
+		}
+
+		m.help = true
+		if _, cmd := m.Update(keyMsg(key)); cmd == nil {
+			t.Errorf("%s in the help overlay did not return a quit command", key)
+		}
+	}
+}
+
+func TestViewShowsGlyphStatusAndButton(t *testing.T) {
+	m := newTestModel(t, target("web"), target("api"))
+	m.now = m.targets[0].lastStart.Add(48 * time.Second)
+	m.targets[1].state = stateExited
+	m.targets[1].exitCode = 0
+	m.targets[1].exitLabel = "exit 0"
+	m.toggleMute(0)
+
+	lines := strings.Split(m.View(), "\n")
+	if len(lines) != m.height {
+		t.Fatalf("view has %d lines, want %d", len(lines), m.height)
+	}
+
+	for _, line := range lines {
+		if got := lipgloss.Width(line); got != m.width {
+			t.Fatalf("line width = %d, want %d: %q", got, m.width, line)
+		}
+	}
+
+	web := lines[1]
+	for _, want := range []string{"●", "web", "0m48s", "M"} {
+		if !strings.Contains(web, want) {
+			t.Errorf("web row %q is missing %q", web, want)
+		}
+	}
+	if api := lines[2]; !strings.Contains(api, "✓") || !strings.Contains(api, "exit 0") {
+		t.Errorf("api row = %q, want ✓ and exit 0", api)
+	}
+	if all := lines[0]; !strings.Contains(all, "1●") || !strings.Contains(all, "1✓") {
+		t.Errorf("ALL row = %q, want the 1● 1✓ rollup", all)
+	}
+}
+
+func TestViewFitsNarrowTerminals(t *testing.T) {
+	for _, width := range []int{20, 40} {
+		m := newTestModel(t, target("a-very-long-target-name"), target("api"))
+		m.width, m.height = width, 8
+		for _, line := range strings.Split(m.View(), "\n") {
+			if got := lipgloss.Width(line); got != width {
+				t.Fatalf("width %d: line width = %d: %q", width, got, line)
+			}
+		}
+	}
+}
+
+func TestScrollFreezesTailAndMarkerResumesIt(t *testing.T) {
+	m := newTestModel(t, target("web"))
+	for i := 0; i < 40; i++ {
+		m.applyEvent(event{kind: evOutput, target: "web", line: "line"})
+	}
+	m.View()
+
+	m.scrollUp(10)
+	if m.follow {
+		t.Fatal("scrolling up did not freeze the tail")
+	}
+
+	m.applyEvent(event{kind: evOutput, target: "web", line: "new"})
+	if m.pending != 1 {
+		t.Fatalf("pending = %d, want 1", m.pending)
+	}
+	if view := m.View(); !strings.Contains(view, "↓ 1 new") {
+		t.Fatalf("the marker is not in the view:\n%s", view)
+	}
+
+	marker := m.layout.marker
+	if marker.w == 0 {
+		t.Fatal("the marker was not recorded for hit testing")
+	}
+	m.handleMouse(mouse(marker.x, marker.y, false))
+	if !m.follow || m.pending != 0 {
+		t.Fatalf("clicking the marker did not resume following: follow=%v pending=%d", m.follow, m.pending)
+	}
+}
+
+func TestMouseClicksMuteSoloAndFocus(t *testing.T) {
+	m := newTestModel(t, target("web"), target("api"))
+	m.View()
+
+	// The stream button cell is the last cell of the left column.
+	btnX := m.layout.leftW - 1
+	m.handleMouse(mouse(btnX, 1, false))
+	if got := m.button(0); got != "M" {
+		t.Fatalf("button after click = %q, want M", got)
+	}
+
+	// A click on the name cell selects the row, and a second one focuses it.
+	m.handleMouse(mouse(2, 2, false))
+	if m.cursor != 2 {
+		t.Fatalf("cursor = %d, want 2", m.cursor)
+	}
+	m.handleMouse(mouse(2, 2, false))
+	if m.focus != 2 {
+		t.Fatalf("focus = %d, want 2 after a double click", m.focus)
+	}
+	if got := m.button(0); got != "M" {
+		t.Fatalf("button = %q, want M still", got)
+	}
+
+	// Shift-click solos the row under the pointer.
+	m.handleMouse(mouse(2, 1, true))
+	if got := m.button(0); got != "S" {
+		t.Fatalf("button after shift-click = %q, want S", got)
+	}
+
+	// Clicking the ALL row moves the cursor back to it.
+	m.handleMouse(mouse(2, 0, false))
+	if m.cursor != 0 {
+		t.Fatalf("cursor = %d, want 0", m.cursor)
+	}
+}
+
+func TestEscReturnsToAllPane(t *testing.T) {
+	m := newTestModel(t)
+	m.setFocus(2)
+	press(m, "esc")
+	if m.focus != 0 {
+		t.Fatalf("focus = %d, want the ALL pane", m.focus)
+	}
+}
+
+func TestOpenKeyAndAutoOpen(t *testing.T) {
+	var opened []string
+	old := openURL
+	openURL = func(url string) error {
+		opened = append(opened, url)
+		return nil
+	}
+	defer func() { openURL = old }()
+
+	web := target("web")
+	web.URL = "http://localhost:5173"
+	web.Open = true
+	m := newTestModel(t, web, target("api"))
+
+	m.applyEvent(event{kind: evStarted, target: "web"})
+	m.applyEvent(event{kind: evStarted, target: "web"}) // a restart must not re-open
+	if len(opened) != 1 || opened[0] != web.URL {
+		t.Fatalf("opened = %q, want the url exactly once", opened)
+	}
+
+	// o opens the highlighted row's url, and does nothing without one.
+	m.cursor = 2
+	press(m, "o")
+	if len(opened) != 1 {
+		t.Fatalf("o on a target without a url opened %q", opened)
+	}
+	m.cursor = 1
+	press(m, "o")
+	if len(opened) != 2 {
+		t.Fatalf("o did not open the url, opened = %q", opened)
+	}
+}
+
+func TestRowStatusText(t *testing.T) {
+	m := newTestModel(t, target("web"))
+	m.now = m.targets[0].lastStart.Add(65 * time.Second)
+	if got := m.status(m.targets[0]); got != "1m05s" {
+		t.Errorf("running status = %q, want 1m05s", got)
+	}
+
+	m.targets[0].state = stateExited
+	m.targets[0].exitCode = -1
+	m.targets[0].exitLabel = "exit segv"
+	if got := m.status(m.targets[0]); got != "exit segv" {
+		t.Errorf("exited status = %q, want exit segv", got)
+	}
+	if got := m.targets[0].glyph(); got != "✗" {
+		t.Errorf("glyph = %q, want ✗", got)
+	}
+	if got := stateColor(m.targets[0]); got != colorRed {
+		t.Errorf("color = %q, want red", got)
+	}
+}
+
+func TestAppendCappedKeepsNewestLines(t *testing.T) {
+	var lines []string
+	for i := 0; i < lineCap+5; i++ {
+		lines = appendCapped(lines, "line")
+	}
+	if len(lines) != lineCap {
+		t.Fatalf("len = %d, want %d", len(lines), lineCap)
+	}
+}
+
+// recordingSink captures what a runner reports without a terminal.
+type recordingSink struct {
+	mu     sync.Mutex
+	events []event
+}
+
+func (s *recordingSink) emit(ev event) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events = append(s.events, ev)
+}
+
+func (s *recordingSink) all() []event {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]event(nil), s.events...)
+}
+
+func change() rerun.ChangeSet {
+	return rerun.ChangeSet{Files: map[string]struct{}{"a.go": {}}, FirstFile: "a.go"}
+}
+
+// A target the user stopped must not restart on a file change. start() emits
+// evStarted before it returns, so an empty event list proves no start either.
+func TestStoppedTargetDoesNotRestartOnChange(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		target Target
+		stop   bool
+	}{
+		{name: "stopped by space", target: Target{Name: "t", Cmd: "true", Selected: true}, stop: true},
+		{name: "selected false", target: Target{Name: "t", Cmd: "true", Selected: false}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			sink := &recordingSink{}
+			r := newTargetRunner(tt.target, sink)
+			if tt.stop {
+				atomic.StoreInt32(&r.stopped, 1)
+			}
+
+			r.handleChange(context.Background(), change())
+
+			if got := sink.all(); len(got) != 0 {
+				t.Fatalf("a stopped target reported %+v, want nothing and no start", got)
+			}
+		})
+	}
+}
+
+// The contrast case: a running target does report the change and restarts.
+func TestRunningTargetRestartsOnChange(t *testing.T) {
+	sink := &recordingSink{}
+	r := newTargetRunner(Target{Name: "t", Cmd: "true", Selected: true, Grace: rerun.DefaultGrace}, sink)
+
+	r.handleChange(context.Background(), change())
+
+	var kinds []eventKind
+	for _, ev := range sink.all() {
+		kinds = append(kinds, ev.kind)
+	}
+	if want := []eventKind{evChanged, evStarted}; !reflect.DeepEqual(kinds, want) {
+		t.Fatalf("events = %v, want %v", kinds, want)
+	}
+}
+
+// Control messages are how the TUI starts a target that boots off.
+func TestControlStartBootsAnOffTarget(t *testing.T) {
+	sink := &recordingSink{}
+	r := newTargetRunner(Target{Name: "t", Cmd: "true", Selected: false, Grace: rerun.DefaultGrace}, sink)
+	if !r.userStopped() {
+		t.Fatal("a selected:false target did not boot off")
+	}
+
+	r.handleControl(context.Background(), ctrlMsg{kind: ctrlStart})
+	if r.userStopped() {
+		t.Error("ctrlStart did not clear the stop")
+	}
+
+	var started bool
+	for _, ev := range sink.all() {
+		started = started || ev.kind == evStarted
+	}
+	if !started {
+		t.Fatal("ctrlStart did not start a generation")
+	}
+}

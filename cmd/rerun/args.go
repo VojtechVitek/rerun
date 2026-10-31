@@ -8,6 +8,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/charmbracelet/x/term"
 )
 
 // Args is the parsed rerun CLI invocation.
@@ -230,5 +232,9 @@ func isTerminal(f *os.File) bool {
 	if err != nil {
 		return true
 	}
-	return info.Mode()&os.ModeCharDevice != 0
+	// The char-device bit is not enough: /dev/null is one, but not a terminal.
+	if info.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	return term.IsTerminal(f.Fd())
 }

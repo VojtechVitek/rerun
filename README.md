@@ -17,6 +17,9 @@ rerun --on a b --except c d -- <cmd> --on is an explicit watchlist keyword
 
 Everything after `--` is the command, passed through verbatim.
 
+Target mode on a terminal opens a TUI: one row per target, `?` lists the keys.
+Piped or non-TTY output stays plain prefixed lines.
+
 #### Examples:
 ```bash
 # Ad-hoc: watch ./ and re-run the command on any change
@@ -78,6 +81,9 @@ Each top-level key is one target. Fields:
 | `on` | watch paths or globs, a string or a list |
 | `except` | paths or globs to ignore, a string or a list |
 | `cmd` | shell command to run, required |
+| `url` | url to open for the target (`o`, and `open: true` at startup) |
+| `open` | open `url` in the browser once at startup (default false) |
+| `selected` | start this target on a bare `rerun` (default true) |
 | `delay` | batch window before restarting (default 200ms) |
 | `cooldown` | minimum time between restarts (default 0s) |
 | `grace` | time between SIGTERM and SIGKILL (default 5s) |

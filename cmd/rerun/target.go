@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"fmt"
 	"io"
 	"os"
 	"os/signal"
@@ -23,52 +22,81 @@ func runTargets(targets []Target, out io.Writer, signals <-chan os.Signal) int {
 	if out == nil {
 		out = os.Stdout
 	}
-	if signals == nil {
-		ch := make(chan os.Signal, 4)
-		signal.Notify(ch, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
-		defer signal.Stop(ch)
-		signals = ch
-	}
+	signals, stopSignals := signalChannel(signals)
+	defer stopSignals()
 
+	group := newTargetGroup(targets, newPlainSink(out))
+	group.start()
+
+	select {
+	case <-group.done:
+		return group.exitCode()
+	case <-signals:
+		return shutdownTargets(group, signals)
+	}
+}
+
+// signalChannel returns the caller's channel, or a fresh one wired to the
+// shutdown signals. The returned stop function releases it.
+func signalChannel(signals <-chan os.Signal) (<-chan os.Signal, func()) {
+	if signals != nil {
+		return signals, func() {}
+	}
+	ch := make(chan os.Signal, 4)
+	signal.Notify(ch, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+	return ch, func() { signal.Stop(ch) }
+}
+
+// targetGroup owns one runner per target and the process lifecycle both
+// front-ends share.
+type targetGroup struct {
+	ctx     context.Context
+	cancel  context.CancelFunc
+	sink    sink
+	runners []*targetRunner
+	done    chan struct{}
+	failed  int32
+	wg      sync.WaitGroup
+}
+
+func newTargetGroup(targets []Target, s sink) *targetGroup {
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	lines := &sync.Mutex{}
-	runners := make([]*targetRunner, 0, len(targets))
+	g := &targetGroup{ctx: ctx, cancel: cancel, sink: s, done: make(chan struct{})}
 	for _, target := range targets {
-		runners = append(runners, newTargetRunner(target, out, lines))
+		g.runners = append(g.runners, newTargetRunner(target, s))
 	}
+	return g
+}
 
-	var failed int32
-	var wg sync.WaitGroup
-	for _, r := range runners {
-		wg.Add(1)
+func (g *targetGroup) start() {
+	for _, r := range g.runners {
+		g.wg.Add(1)
 		go func(r *targetRunner) {
-			defer wg.Done()
-			if err := r.run(ctx); err != nil {
-				atomic.StoreInt32(&failed, 1)
-				r.printf("rerun: %s%v\n", r.label(), err)
+			defer g.wg.Done()
+			if err := r.run(g.ctx); err != nil {
+				atomic.StoreInt32(&g.failed, 1)
+				g.sink.emit(event{kind: evRunnerErr, target: r.target.Name, err: err})
 			}
 		}(r)
 	}
-
-	done := make(chan struct{})
 	go func() {
-		wg.Wait()
-		close(done)
+		g.wg.Wait()
+		close(g.done)
 	}()
+}
 
-	select {
-	case <-signals:
-	case <-done:
-		if atomic.LoadInt32(&failed) != 0 {
-			return 1
-		}
-		return 0
+// exitCode is the run's exit code once every runner has returned on its own.
+func (g *targetGroup) exitCode() int {
+	if atomic.LoadInt32(&g.failed) != 0 {
+		return 1
 	}
+	return 0
+}
 
-	// First signal: graceful kill. A second one skips the grace period.
-	for _, r := range runners {
+// shutdownTargets stops every runner gracefully, force-killing on a second
+// signal. It returns 130 when the kill was forced.
+func shutdownTargets(g *targetGroup, signals <-chan os.Signal) int {
+	for _, r := range g.runners {
 		r.markStopping()
 	}
 
@@ -78,7 +106,7 @@ func runTargets(targets []Target, out io.Writer, signals <-chan os.Signal) int {
 		select {
 		case <-signals:
 			atomic.StoreInt32(&forced, 1)
-			for _, r := range runners {
+			for _, r := range g.runners {
 				r.force()
 			}
 		case <-stop:
@@ -86,7 +114,7 @@ func runTargets(targets []Target, out io.Writer, signals <-chan os.Signal) int {
 	}()
 
 	var killWG sync.WaitGroup
-	for _, r := range runners {
+	for _, r := range g.runners {
 		killWG.Add(1)
 		go func(r *targetRunner) {
 			defer killWG.Done()
@@ -95,8 +123,8 @@ func runTargets(targets []Target, out io.Writer, signals <-chan os.Signal) int {
 	}
 	killWG.Wait()
 
-	cancel()
-	<-done
+	g.cancel()
+	<-g.done
 	close(stop)
 
 	if atomic.LoadInt32(&forced) != 0 {
@@ -105,27 +133,73 @@ func runTargets(targets []Target, out io.Writer, signals <-chan os.Signal) int {
 	return 0
 }
 
-// targetRunner owns one target's watcher and its current child process.
+// ctrlKind is a front-end's request to the runner that owns the process.
+type ctrlKind int
+
+const (
+	ctrlStop ctrlKind = iota
+	ctrlStart
+	ctrlReboot
+)
+
+type ctrlMsg struct{ kind ctrlKind }
+
+// targetRunner owns one target's watcher and its current child process. Its
+// run goroutine is the only writer of process state; every other goroutine
+// sends ctrlMsg over ctrlCh and reads the event stream.
 type targetRunner struct {
 	target Target
-	out    io.Writer
-	lines  *sync.Mutex
+	sink   sink
+	// out receives the ad-hoc command's output directly. Nil for sinks that
+	// render output themselves.
+	out io.Writer
+
+	ctrlCh   chan ctrlMsg
+	finished chan struct{}
 
 	mu        sync.Mutex
 	cmd       rerun.Command
 	lastStart time.Time
 	stopping  int32
+	// stopped is the user's stop: the target stays down until space or r.
+	stopped int32
 
 	// exited is closed when the current generation is reaped. Only the run
 	// goroutine reads it, so no lock is needed.
 	exited <-chan struct{}
 }
 
-func newTargetRunner(target Target, out io.Writer, lines *sync.Mutex) *targetRunner {
-	return &targetRunner{target: target, out: out, lines: lines}
+func newTargetRunner(target Target, s sink) *targetRunner {
+	r := &targetRunner{
+		target:   target,
+		sink:     s,
+		ctrlCh:   make(chan ctrlMsg, 16),
+		finished: make(chan struct{}),
+	}
+	if w, ok := s.(interface{ writer() io.Writer }); ok {
+		r.out = w.writer()
+	}
+	// An unselected target starts off: it stays down until space or r.
+	if !target.Selected {
+		atomic.StoreInt32(&r.stopped, 1)
+	}
+	return r
+}
+
+// control asks the run goroutine to stop, start, or reboot the target. It
+// reports false once the runner has returned.
+func (r *targetRunner) control(kind ctrlKind) bool {
+	select {
+	case r.ctrlCh <- ctrlMsg{kind: kind}:
+		return true
+	case <-r.finished:
+		return false
+	}
 }
 
 func (r *targetRunner) run(ctx context.Context) error {
+	defer close(r.finished)
+
 	watcher, err := rerun.NewWatcher()
 	if err != nil {
 		return err
@@ -155,12 +229,12 @@ func (r *targetRunner) run(ctx context.Context) error {
 
 	// Start before the watch walk: the walk can take seconds on a big tree,
 	// and the command's output must not wait for it.
-	if err := r.start(); err != nil {
-		return err
+	if !r.userStopped() {
+		if err := r.start(); err != nil {
+			return err
+		}
 	}
-	if r.raw() {
-		r.printf("%s\n", clearTerminal)
-	}
+	r.sink.emit(event{kind: evCleared, target: r.target.Name})
 
 	changes := watcher.Watch(r.target.Delay)
 
@@ -177,6 +251,9 @@ func (r *targetRunner) run(ctx context.Context) error {
 			}
 			r.handleChange(ctx, changeSet)
 
+		case c := <-r.ctrlCh:
+			r.handleControl(ctx, c)
+
 		case <-r.exited:
 			r.reportExit()
 			r.exited = nil
@@ -184,13 +261,40 @@ func (r *targetRunner) run(ctx context.Context) error {
 	}
 }
 
+// handleControl runs a front-end's start/stop/reboot request inside the run
+// goroutine, so process state is never written from two goroutines.
+func (r *targetRunner) handleControl(ctx context.Context, c ctrlMsg) {
+	switch c.kind {
+	case ctrlStop:
+		atomic.StoreInt32(&r.stopped, 1)
+		r.killCurrent(ctx)
+
+	case ctrlStart:
+		atomic.StoreInt32(&r.stopped, 0)
+		if cmd := r.currentCmd(); cmd != nil && !cmd.Exited() {
+			return
+		}
+		r.startReporting()
+
+	case ctrlReboot:
+		atomic.StoreInt32(&r.stopped, 0)
+		r.killCurrent(ctx)
+		r.waitCooldown(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		r.startReporting()
+	}
+}
+
 func (r *targetRunner) handleChange(ctx context.Context, changeSet rerun.ChangeSet) {
 	if changeSet.Error != nil {
-		if r.raw() {
-			r.printf("%v\n", changeSet.Error)
-		} else {
-			r.printf("[%s] watcher error: %v\n", r.target.Name, changeSet.Error)
-		}
+		r.sink.emit(event{kind: evWatcherErr, target: r.target.Name, err: changeSet.Error})
+		return
+	}
+
+	// A target the user stopped waits for space or r, not for files.
+	if r.userStopped() {
 		return
 	}
 
@@ -201,19 +305,16 @@ func (r *targetRunner) handleChange(ctx context.Context, changeSet rerun.ChangeS
 		return
 	}
 
-	plural := ""
-	if len(changeSet.Files) > 1 {
-		plural = "s"
-	}
-	if r.raw() {
-		r.printf("%s%s# %d file%s changed (e.g. %s)%s\n", clearTerminal, greenColor,
-			len(changeSet.Files), plural, changeSet.FirstFile, resetColor)
-	} else {
-		r.printf("[%s] %d file%s changed (e.g. %s)\n", r.target.Name, len(changeSet.Files), plural, changeSet.FirstFile)
-	}
+	r.sink.emit(event{kind: evChanged, target: r.target.Name, count: len(changeSet.Files), first: changeSet.FirstFile})
 
+	r.startReporting()
+}
+
+// startReporting starts a generation, reporting a spawn failure in the
+// target's stream instead of taking the whole run down.
+func (r *targetRunner) startReporting() {
 	if err := r.start(); err != nil {
-		r.printf("rerun: %s%v\n", r.label(), err)
+		r.sink.emit(event{kind: evRunnerErr, target: r.target.Name, err: err})
 	}
 }
 
@@ -239,13 +340,15 @@ func (r *targetRunner) start() error {
 	r.mu.Lock()
 	r.cmd = cmd
 	r.lastStart = time.Now()
+	started := r.lastStart
 	r.mu.Unlock()
 
 	r.exited = exited
+	r.sink.emit(event{kind: evStarted, target: r.target.Name, at: started})
 	return nil
 }
 
-// startPiped spawns a generation whose output is prefixed line by line.
+// startPiped spawns a generation whose output is reported line by line.
 func (r *targetRunner) startPiped() (rerun.Command, *os.File, error) {
 	pr, pw, err := os.Pipe()
 	if err != nil {
@@ -260,12 +363,12 @@ func (r *targetRunner) startPiped() (rerun.Command, *os.File, error) {
 		return nil, nil, err
 	}
 
-	go r.prefix(pr)
+	go r.readLines(pr)
 	return cmd, pw, nil
 }
 
 // watchGeneration closes the pipe writer once the generation is reaped, which
-// unblocks the prefixer's read side.
+// unblocks the readLines side.
 func (r *targetRunner) watchGeneration(cmd rerun.Command, pw *os.File) <-chan struct{} {
 	exited := make(chan struct{})
 	go func() {
@@ -278,18 +381,19 @@ func (r *targetRunner) watchGeneration(cmd rerun.Command, pw *os.File) <-chan st
 	return exited
 }
 
-func (r *targetRunner) prefix(pr *os.File) {
+func (r *targetRunner) readLines(pr *os.File) {
 	defer pr.Close()
 
 	scanner := bufio.NewScanner(pr)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
-		r.printf("[%s] %s\n", r.target.Name, scanner.Text())
+		r.sink.emit(event{kind: evOutput, target: r.target.Name, line: scanner.Text()})
 	}
 }
 
 func (r *targetRunner) reportExit() {
-	if atomic.LoadInt32(&r.stopping) != 0 {
+	// A kill rerun performed is not the target's exit.
+	if r.stoppingNow() || r.userStopped() {
 		return
 	}
 
@@ -299,25 +403,18 @@ func (r *targetRunner) reportExit() {
 	}
 
 	code, err := cmd.ExitState()
-	status := describeExit(code, err)
-	if r.raw() {
-		r.printf("rerun: exited (%s) — waiting for changes\n", status)
-		return
-	}
-	r.printf("[%s] exited (%s) — waiting for changes\n", r.target.Name, status)
+	r.sink.emit(event{
+		kind:   evExited,
+		target: r.target.Name,
+		status: describeExit(code, err),
+		code:   code,
+		err:    err,
+	})
 }
 
 // raw reports whether the target passes output through unprefixed. The ad-hoc
 // command is the only nameless target.
 func (r *targetRunner) raw() bool { return r.target.Name == "" }
-
-// label is the target's identity in rerun's own messages.
-func (r *targetRunner) label() string {
-	if r.raw() {
-		return ""
-	}
-	return r.target.Name + ": "
-}
 
 // killCurrent stops the current generation, waiting the grace period.
 func (r *targetRunner) killCurrent(ctx context.Context) {
@@ -352,6 +449,14 @@ func (r *targetRunner) waitCooldown(ctx context.Context) {
 	}
 }
 
+func (r *targetRunner) userStopped() bool {
+	return atomic.LoadInt32(&r.stopped) != 0
+}
+
+func (r *targetRunner) stoppingNow() bool {
+	return atomic.LoadInt32(&r.stopping) != 0
+}
+
 func (r *targetRunner) markStopping() {
 	atomic.StoreInt32(&r.stopping, 1)
 }
@@ -376,12 +481,6 @@ func (r *targetRunner) currentCmd() rerun.Command {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.cmd
-}
-
-func (r *targetRunner) printf(format string, args ...any) {
-	r.lines.Lock()
-	defer r.lines.Unlock()
-	fmt.Fprintf(r.out, format, args...)
 }
 
 const (

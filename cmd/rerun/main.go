@@ -77,8 +77,11 @@ func runConfigMode(args Args) int {
 			return 1
 		}
 		targets := lookupAll(cfg, args.Targets)
+		for i := range targets {
+			targets[i].Selected = true // naming a target starts it, selected or not
+		}
 		applyOverrides(targets, args)
-		return runTargets(targets, os.Stdout, nil)
+		return startTargets(targets)
 	}
 
 	cfg, err := LoadConfig(".")
@@ -97,12 +100,24 @@ func runConfigMode(args Args) int {
 			return 1
 		}
 		targets := []Target{target}
+		targets[0].Selected = true
 		applyOverrides(targets, args)
-		return runTargets(targets, os.Stdout, nil)
+		return startTargets(targets)
 	}
 
 	targets := append([]Target(nil), cfg.Targets...)
 	applyOverrides(targets, args)
+	return startTargets(targets)
+}
+
+// startTargets runs the targets: behind the TUI on a terminal, as plain
+// prefixed output everywhere else (pipes, CI, ad-hoc).
+func startTargets(targets []Target) int {
+	// The TUI needs a terminal on both ends, so a redirected stdin keeps the
+	// plain path instead of failing to switch the terminal to raw mode.
+	if isTerminal(os.Stdout) && isTerminal(os.Stdin) {
+		return runTUI(targets, nil)
+	}
 	return runTargets(targets, os.Stdout, nil)
 }
 
@@ -142,11 +157,12 @@ func applyOverrides(targets []Target, args Args) {
 // Name is what selects the raw passthrough output mode.
 func adHocTarget(args Args) Target {
 	targets := []Target{{
-		Cmd:    rerun.ShellScript(args.Cmd),
-		On:     args.Watch,
-		Except: args.Except,
-		Delay:  defaultDelay,
-		Grace:  rerun.DefaultGrace,
+		Cmd:      rerun.ShellScript(args.Cmd),
+		On:       args.Watch,
+		Except:   args.Except,
+		Delay:    defaultDelay,
+		Grace:    rerun.DefaultGrace,
+		Selected: true,
 	}}
 	applyOverrides(targets, args)
 	return targets[0]

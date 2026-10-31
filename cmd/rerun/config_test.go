@@ -245,6 +245,63 @@ func TestParseConfigNullOnIsEmptyList(t *testing.T) {
 	}
 }
 
+func TestParseConfigURLSelectedOpen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ConfigFileName)
+	writeFile(t, path, `frontend:
+  cmd: pnpm run dev
+  url: http://localhost:5173
+  open: true
+
+api:
+  cmd: go run ./cmd/api
+  selected: false
+`)
+
+	cfg, err := ParseConfig(path)
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+
+	frontend := cfg.Targets[0]
+	if frontend.URL != "http://localhost:5173" {
+		t.Errorf("url = %q", frontend.URL)
+	}
+	if !frontend.Open {
+		t.Error("open = false, want true")
+	}
+	if !frontend.Selected {
+		t.Error("selected = false by default, want true")
+	}
+
+	api := cfg.Targets[1]
+	if api.Selected {
+		t.Error("selected = true for `selected: false`")
+	}
+	if api.Open {
+		t.Error("open = true by default")
+	}
+	if api.URL != "" {
+		t.Errorf("url = %q, want empty", api.URL)
+	}
+}
+
+func TestParseConfigBoolFieldErrors(t *testing.T) {
+	for _, field := range []string{"open", "selected"} {
+		path := filepath.Join(t.TempDir(), ConfigFileName)
+		writeFile(t, path, "api:\n  cmd: echo hi\n  "+field+": 1\n")
+
+		_, err := ParseConfig(path)
+		if err == nil {
+			t.Fatalf("%s: expected an error, got nil", field)
+		}
+		for _, sub := range []string{`target "api"`, `field "` + field + `"`, "expected a boolean, got int"} {
+			if !strings.Contains(err.Error(), sub) {
+				t.Errorf("%s: error = %q, want substring %q", field, err.Error(), sub)
+			}
+		}
+	}
+}
+
 func TestParseConfigInvalidYAMLNamesFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ConfigFileName)
 	writeFile(t, path, "api:\n  cmd: [unterminated\n")
