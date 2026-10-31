@@ -233,29 +233,31 @@ func statusColor(t *tuiTarget) string {
 	return ""
 }
 
+// renderSegs draws one row of styled segments in exactly width cells. Text
+// past the edge is cut, never wrapped: a wrapped row breaks the frame's grid.
 func renderSegs(segs []seg, base lipgloss.Style, width int) string {
 	var b strings.Builder
 	cells := 0
 	for _, s := range segs {
-		if s.text == "" {
+		if s.text == "" || cells >= width {
 			continue
 		}
 		style := base
 		if s.color != "" {
 			style = style.Foreground(lipgloss.Color(s.color))
 		}
-		text := s.text
+		text := truncate(s.text, width-cells)
+		if text == "" {
+			continue
+		}
 		if s.link != "" {
 			text = osc8(s.link, text)
 		}
 		b.WriteString(style.Render(text))
-		cells += displayWidth(s.text)
+		cells += displayWidth(text)
 	}
 	if cells < width {
 		b.WriteString(base.Render(strings.Repeat(" ", width-cells)))
-	}
-	if cells > width {
-		return lipgloss.NewStyle().MaxWidth(width).Render(b.String())
 	}
 	return b.String()
 }

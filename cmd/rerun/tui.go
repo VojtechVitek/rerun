@@ -395,6 +395,14 @@ func (m *tuiModel) applyEvent(ev event) {
 		m.addLine(i, fmt.Sprintf("watcher error: %v", ev.err))
 
 	case evRunnerErr:
+		// Nothing is running after a spawn failure, so the row leaves the
+		// running state the way an exit does.
+		t.state = stateExited
+		t.exitCode = -1
+		t.exitLabel = "exit error"
+		if m.focus != row {
+			t.unseen = true
+		}
 		m.addLine(i, fmt.Sprintf("rerun: %v", ev.err))
 
 	case evCleared:

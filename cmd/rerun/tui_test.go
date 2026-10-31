@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -724,5 +727,145 @@ func TestControlStartBootsAnOffTarget(t *testing.T) {
 	}
 	if !started {
 		t.Fatal("ctrlStart did not start a generation")
+	}
+}
+
+func eventKinds(s *recordingSink) []eventKind {
+	var kinds []eventKind
+	for _, ev := range s.all() {
+		kinds = append(kinds, ev.kind)
+	}
+	return kinds
+}
+
+// A target that exits by itself must not restart itself: the runner reports the
+// exit, stays idle, and starts a generation again only on the next change.
+func TestSelfExitedTargetWaitsForChange(t *testing.T) {
+	sink := &recordingSink{}
+	r := newTargetRunner(Target{Name: "t", Cmd: "true", Selected: true, Grace: rerun.DefaultGrace}, sink)
+
+	if err := r.start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	<-r.exited
+	r.reportExit()
+
+	// Phase 1: idle after the self-exit. Nothing else was started.
+	if got, want := eventKinds(sink), []eventKind{evStarted, evExited}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("after the self-exit events = %v, want %v and no restart", got, want)
+	}
+
+	m := newTestModel(t, target("t"))
+	m.applyEvents(sink.all())
+	if m.targets[0].state != stateExited {
+		t.Fatalf("state while waiting = %v, want exited", m.targets[0].state)
+	}
+	if got := m.status(m.targets[0]); got != "exit 0" {
+		t.Fatalf("status while waiting = %q, want exit 0", got)
+	}
+
+	// Phase 2: the next change brings it back.
+	seen := len(sink.all())
+	r.handleChange(context.Background(), change())
+
+	if got, want := eventKinds(sink), []eventKind{evStarted, evExited, evChanged, evStarted}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("after the change events = %v, want %v", got, want)
+	}
+	m.applyEvents(sink.all()[seen:])
+	if m.targets[0].state != stateRunning {
+		t.Fatalf("state after the change = %v, want running", m.targets[0].state)
+	}
+	if got := m.targets[0].glyph(); got != "●" {
+		t.Errorf("glyph after the change = %q, want ●", got)
+	}
+}
+
+// f, c, and / are reserved for Phase B, so pressing one must change nothing.
+func TestUnboundKeysChangeNothing(t *testing.T) {
+	for _, key := range []string{"f", "c", "/"} {
+		t.Run(key, func(t *testing.T) {
+			m := newTestModel(t)
+			m.cursor = 2
+			m.setFocus(1)
+			m.toggleMute(0)
+			m.toggleSolo(1)
+
+			type snapshot struct {
+				cursor, focus, solo int
+				help, follow        bool
+				buttons             []string
+			}
+			before := snapshot{m.cursor, m.focus, m.solo, m.help, m.follow, buttons(m)}
+
+			if _, cmd := m.Update(keyMsg(key)); cmd != nil {
+				t.Errorf("%s returned a command", key)
+			}
+
+			after := snapshot{m.cursor, m.focus, m.solo, m.help, m.follow, buttons(m)}
+			if !reflect.DeepEqual(before, after) {
+				t.Errorf("%s changed the model: before %+v, after %+v", key, before, after)
+			}
+		})
+	}
+}
+
+// A runner that could not start leaves nothing running: the row must not keep
+// the running glyph and a ticking uptime.
+func TestRunnerErrorLeavesRunningState(t *testing.T) {
+	m := newTestModel(t, target("web"))
+	if m.targets[0].state != stateRunning {
+		t.Fatalf("state = %v, want running before the error", m.targets[0].state)
+	}
+
+	m.applyEvent(event{kind: evRunnerErr, target: "web", err: errors.New("exec: \"nope\": executable file not found")})
+
+	if m.targets[0].state != stateExited {
+		t.Fatalf("state = %v, want exited after a runner error", m.targets[0].state)
+	}
+	if got := m.targets[0].glyph(); got != "✗" {
+		t.Errorf("glyph = %q, want ✗", got)
+	}
+	if got := m.status(m.targets[0]); got != "exit error" {
+		t.Errorf("status = %q, want exit error", got)
+	}
+	if got := strings.Join(m.paneLines(), "\n"); !strings.Contains(got, "executable file not found") {
+		t.Errorf("the stream is missing the runner error:\n%s", got)
+	}
+}
+
+// A single line past the scanner's cap ends the read, so the reader must say so
+// instead of going quiet.
+func TestReadLinesReportsScannerError(t *testing.T) {
+	sink := &recordingSink{}
+	r := newTargetRunner(Target{Name: "t", Cmd: "true"}, sink)
+
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		defer pw.Close()
+		_, _ = pw.Write(bytes.Repeat([]byte("x"), 2*1024*1024))
+	}()
+
+	r.readLines(pr)
+
+	got := sink.all()
+	if len(got) != 1 {
+		t.Fatalf("events = %d, want the one scanner error line", len(got))
+	}
+	if got[0].kind != evOutput || !strings.Contains(got[0].line, "token too long") {
+		t.Fatalf("event = %+v, want an output line naming the scanner error", got[0])
+	}
+}
+
+// An overflowing row is cut to the column, never wrapped into extra lines.
+func TestRenderSegsTruncatesInsteadOfWrapping(t *testing.T) {
+	got := renderSegs([]seg{{text: "aaaaaaaaaa"}, {text: "bbbbbbbbbb"}}, lipgloss.NewStyle(), 12)
+	if n := strings.Count(got, "\n"); n != 0 {
+		t.Fatalf("renderSegs wrapped into %d extra lines: %q", n, got)
+	}
+	if w := displayWidth(got); w != 12 {
+		t.Fatalf("width = %d, want 12: %q", w, got)
 	}
 }

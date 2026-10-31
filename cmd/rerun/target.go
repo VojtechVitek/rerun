@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"os/signal"
@@ -187,13 +188,17 @@ func newTargetRunner(target Target, s sink) *targetRunner {
 }
 
 // control asks the run goroutine to stop, start, or reboot the target. It
-// reports false once the runner has returned.
+// reports false once the runner has returned. A full queue drops the command
+// instead of blocking the caller: a burst of key autorepeat asks for what the
+// queued commands already do, and stalling the TUI's event loop is worse.
 func (r *targetRunner) control(kind ctrlKind) bool {
 	select {
 	case r.ctrlCh <- ctrlMsg{kind: kind}:
 		return true
 	case <-r.finished:
 		return false
+	default:
+		return true
 	}
 }
 
@@ -388,6 +393,10 @@ func (r *targetRunner) readLines(pr *os.File) {
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		r.sink.emit(event{kind: evOutput, target: r.target.Name, line: scanner.Text()})
+	}
+	// A line past the cap ends the read, so say so instead of going quiet.
+	if err := scanner.Err(); err != nil {
+		r.sink.emit(event{kind: evOutput, target: r.target.Name, line: fmt.Sprintf("rerun: reading output: %v", err)})
 	}
 }
 
